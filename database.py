@@ -898,3 +898,74 @@ def get_rekap_nr_kelas(kelas, semester, tahun_ajar):
     """, conn, params=[semester, tahun_ajar, kelas])
     conn.close()
     return df
+
+
+# ── MIGRATIONS ────────────────────────────────────────────────────
+
+def run_migrations():
+    """Jalankan semua schema migrations secara aman — idempotent."""
+    conn = get_conn()
+    migrations = [
+        "ALTER TABLE guru ADD COLUMN nuptk TEXT DEFAULT ''",
+        "ALTER TABLE siswa ADD COLUMN nis TEXT DEFAULT ''",
+        "ALTER TABLE siswa ADD COLUMN nisn TEXT DEFAULT ''",
+        "ALTER TABLE siswa ADD COLUMN alamat TEXT DEFAULT ''",
+        "ALTER TABLE siswa ADD COLUMN fase TEXT DEFAULT ''",
+        "ALTER TABLE nilai_siswa ADD COLUMN capaian TEXT DEFAULT ''",
+        """CREATE TABLE IF NOT EXISTS ekskul_siswa (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            siswa_id INTEGER REFERENCES siswa(id),
+            guru_id INTEGER REFERENCES guru(id),
+            semester TEXT NOT NULL, tahun_ajar TEXT NOT NULL,
+            nama_ekskul TEXT NOT NULL, keterangan TEXT DEFAULT '',
+            UNIQUE(siswa_id, semester, tahun_ajar, nama_ekskul))""",
+        """CREATE TABLE IF NOT EXISTS catatan_rapor (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            siswa_id INTEGER REFERENCES siswa(id),
+            guru_id INTEGER REFERENCES guru(id),
+            semester TEXT NOT NULL, tahun_ajar TEXT NOT NULL,
+            catatan_wali TEXT DEFAULT '', tanggapan_ortu TEXT DEFAULT '',
+            UNIQUE(siswa_id, semester, tahun_ajar))""",
+        """CREATE TABLE IF NOT EXISTS nilai_tp (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            siswa_id INTEGER REFERENCES siswa(id),
+            guru_id INTEGER REFERENCES guru(id),
+            kelas TEXT NOT NULL, semester TEXT NOT NULL,
+            tahun_ajar TEXT NOT NULL, mapel TEXT NOT NULL,
+            tp1 REAL, tp2 REAL, tp3 REAL, tp4 REAL, tp5 REAL,
+            tp6 REAL, tp7 REAL, tp8 REAL, tp9 REAL, tp10 REAL,
+            asts REAL, asas REAL, nr REAL,
+            capaian_maksimal TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(siswa_id, semester, tahun_ajar, mapel))""",
+        """CREATE TABLE IF NOT EXISTS guru_kelas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guru_id INTEGER REFERENCES guru(id) ON DELETE CASCADE,
+            kelas TEXT NOT NULL,
+            UNIQUE(guru_id, kelas))""",
+        """CREATE TABLE IF NOT EXISTS agenda_sekolah (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            judul TEXT NOT NULL, deskripsi TEXT DEFAULT '',
+            tanggal TEXT NOT NULL, tanggal_end TEXT DEFAULT '',
+            kategori TEXT DEFAULT 'Umum', dibuat_oleh TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')))""",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+    # Populate guru_kelas dari kolom kelas jika kosong
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM guru_kelas").fetchone()[0]
+        if count == 0:
+            rows = conn.execute("SELECT id, kelas FROM guru WHERE kelas IS NOT NULL AND kelas != ''").fetchall()
+            for r in rows:
+                try:
+                    conn.execute("INSERT OR IGNORE INTO guru_kelas (guru_id, kelas) VALUES (?,?)", (r['id'], r['kelas']))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
