@@ -12,7 +12,7 @@ from ui_helpers import (
     STATUS_LABEL, STATUS_LABEL_SHORT, STATUS_COLOR,
 )
 from database import (
-    init_db, init_agenda_table, init_nilai_table,
+    init_db, init_agenda_table, init_nilai_table, run_migrations,
     get_all_guru, get_guru_by_nama, get_mapel_guru,
     add_mapel_guru, delete_mapel_guru,
     get_siswa_by_kelas, add_siswa_bulk,

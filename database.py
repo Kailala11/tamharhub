@@ -586,9 +586,13 @@ def update_nuptk(guru_id, nuptk):
 
 def get_nuptk(guru_id):
     conn = get_conn()
-    row = conn.execute("SELECT nuptk FROM guru WHERE id=?", (guru_id,)).fetchone()
-    conn.close()
-    return row["nuptk"] if row else ""
+    try:
+        row = conn.execute("SELECT nuptk FROM guru WHERE id=?", (guru_id,)).fetchone()
+        conn.close()
+        return row["nuptk"] if row and row["nuptk"] else ""
+    except Exception:
+        conn.close()
+        return ""
 
 # ── SISWA LENGKAP (NIS, NISN, Alamat, Fase) ───────────────────────
 
@@ -616,10 +620,13 @@ def update_siswa_info(siswa_id, nis="", nisn="", alamat="", fase=""):
 
 def get_siswa_by_kelas_lengkap(kelas):
     conn = get_conn()
-    df = pd.read_sql(
-        "SELECT * FROM siswa WHERE kelas=? AND status='Aktif' ORDER BY nama",
-        conn, params=[kelas]
-    )
+    try:
+        df = pd.read_sql(
+            "SELECT * FROM siswa WHERE kelas=? AND status='Aktif' ORDER BY nama",
+            conn, params=[kelas]
+        )
+    except Exception:
+        df = get_siswa_by_kelas(kelas)
     conn.close()
     return df
 
@@ -719,16 +726,25 @@ def init_guru_kelas_table():
 def get_kelas_guru(guru_id: int) -> list:
     """Return list kelas yang diajar guru ini (support multi kelas)."""
     conn = get_conn()
-    rows = conn.execute("""
-        SELECT COALESCE(gk.kelas, g.kelas) as kelas
-        FROM guru g
-        LEFT JOIN guru_kelas gk ON gk.guru_id = g.id
-        WHERE g.id = ?
-        ORDER BY kelas
-    """, (guru_id,)).fetchall()
-    conn.close()
-    kelas_list = list(dict.fromkeys([r['kelas'] for r in rows if r['kelas']]))
-    return kelas_list
+    try:
+        rows = conn.execute("""
+            SELECT COALESCE(gk.kelas, g.kelas) as kelas
+            FROM guru g
+            LEFT JOIN guru_kelas gk ON gk.guru_id = g.id
+            WHERE g.id = ?
+            ORDER BY kelas
+        """, (guru_id,)).fetchall()
+        conn.close()
+        kelas_list = list(dict.fromkeys([r['kelas'] for r in rows if r['kelas']]))
+        return kelas_list
+    except Exception:
+        # Fallback: ambil dari kolom kelas langsung
+        try:
+            row = conn.execute("SELECT kelas FROM guru WHERE id=?", (guru_id,)).fetchone()
+        except Exception:
+            row = None
+        conn.close()
+        return [row['kelas']] if row and row['kelas'] else []
 
 def get_guru_by_kelas(kelas: str) -> list:
     """Return list guru yang mengajar di kelas ini."""
