@@ -69,12 +69,12 @@ if not st.session_state.logged_in:
           <p style="font-size:14px;color:#9aa0b8;margin-top:6px">SD Taman Harapan 1 Bekasi</p>
         </div>""", unsafe_allow_html=True)
 
-        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Wali Murid"])
+        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Wali Murid"], key="_ukey1")
 
         guru_nama = None
         if role == "Guru":
             all_guru = get_all_guru()
-            guru_nama = st.selectbox("Pilih nama Anda:", all_guru["nama"].tolist())
+            guru_nama = st.selectbox("Pilih nama Anda:", all_guru["nama"].tolist(), key="_ukey2")
 
         if role == "Wali Murid":
             st.markdown('<div class="alrt blue">Wali Murid tidak perlu password. Langsung tekan Masuk.</div>', unsafe_allow_html=True)
@@ -117,7 +117,7 @@ st.markdown(masthead(user, role), unsafe_allow_html=True)
 with st.sidebar:
     st.markdown(f"### {user}")
     st.markdown("---")
-    tgl_dipilih = st.date_input("Pilih tanggal", value=date.today())
+    tgl_dipilih = st.date_input("Pilih tanggal", value=date.today(), key="_ukey3")
     st.markdown("---")
     if st.button("Keluar", use_container_width=True):
         st.session_state.update(logged_in=False, role=None, guru_nama=None, guru_id=None)
@@ -175,7 +175,7 @@ if role == "kepsek":
 
     with tab_absen:
         st.markdown(f'<div style="padding:10px 20px 0;font-size:14px;color:#9aa0b8">{tgl_fmt}</div>', unsafe_allow_html=True)
-        tingkat = st.radio("Filter kelas:", ["Semua","Kelas I","Kelas II","Kelas III","Kelas IV","Kelas V","Kelas VI","Bidang Studi"], horizontal=True, label_visibility="collapsed")
+        tingkat = st.radio("Filter kelas:", ["Semua","Kelas I","Kelas II","Kelas III","Kelas IV","Kelas V","Kelas VI","Bidang Studi"], horizontal=True, label_visibility="collapsed", key="_ukey4")
         df_absen = get_absen_guru_hari(today_str)
         changes = {}
         for _, row in df_absen.iterrows():
@@ -215,8 +215,8 @@ if role == "kepsek":
 
     with tab_jurnal:
         c1, c2 = st.columns(2)
-        with c1: fg = st.selectbox("Filter guru:", ["Semua"]+get_all_guru()["nama"].tolist())
-        with c2: ft = st.selectbox("Filter tanggal:", ["Hari ini","Semua"])
+        with c1: fg = st.selectbox("Filter guru:", ["Semua"]+get_all_guru()["nama"].tolist(), key="fg_jurnal")
+        with c2: ft = st.selectbox("Filter tanggal:", ["Hari ini","Semua"], key="ft_jurnal")
         df_jf = get_jurnal_semua(tanggal=today_str if ft=="Hari ini" else None)
         if fg != "Semua": df_jf = df_jf[df_jf["guru_nama"]==fg]
         if df_jf.empty: st.info("Belum ada jurnal untuk filter ini.")
@@ -229,9 +229,9 @@ if role == "kepsek":
             with st.form("form_ag_ks"):
                 judul = st.text_input("Judul agenda:", placeholder="Contoh: Upacara Bendera")
                 c1, c2 = st.columns(2)
-                with c1: kat = st.selectbox("Kategori:", KATEGORI)
-                with c2: tgl_ag = st.date_input("Tanggal mulai:", value=date.today())
-                tgl_end = st.date_input("Tanggal selesai (kosongkan jika 1 hari):", value=date.today())
+                with c1: kat_ks = st.selectbox("Kategori:", KATEGORI, key="kat_agenda_ks")
+                with c2: tgl_ag = st.date_input("Tanggal mulai:", value=date.today(), key="_ukey5")
+                tgl_end = st.date_input("Tanggal selesai (kosongkan jika 1 hari):", value=date.today(), key="_ukey6")
                 desk = st.text_area("Keterangan / detail:", placeholder="Informasi untuk wali murid dan guru...")
                 if st.form_submit_button("Simpan Agenda", use_container_width=True):
                     if not judul: st.error("Judul wajib diisi.")
@@ -267,9 +267,9 @@ if role == "kepsek":
     with tab_nilai_ks:
         all_kls = sorted(set(get_all_guru()["kelas"].dropna().unique())-{"Semua Tingkat"})
         c1, c2, c3 = st.columns(3)
-        with c1: kls_nv = st.selectbox("Kelas:", all_kls)
-        with c2: sem_nv = st.selectbox("Semester:", ["Ganjil","Genap"])
-        with c3: thn_nv = st.selectbox("Tahun Ajaran:", THN_LIST, index=1)
+        with c1: kls_nv = st.selectbox("Kelas:", all_kls, key="_ukey7")
+        with c2: sem_nv = st.selectbox("Semester:", ["Ganjil","Genap"], key="sem_nv_ks")
+        with c3: thn_nv = st.selectbox("Tahun Ajaran:", THN_LIST, index=1, key="thn_nv_ks")
         df_nv = get_nilai_kelas(kls_nv, sem_nv, thn_nv)
         df_snv = get_siswa_by_kelas(kls_nv)
         if df_nv.empty or df_nv["mapel"].isna().all():
@@ -287,8 +287,8 @@ if role == "kepsek":
 
     with tab_rekap:
         c1, c2 = st.columns(2)
-        with c1: bln = st.selectbox("Bulan:", list(range(1,13)), index=date.today().month-1, format_func=lambda m: calendar.month_name[m])
-        with c2: thn = st.selectbox("Tahun:", [2024,2025,2026], index=1)
+        with c1: bln = st.selectbox("Bulan:", list(range(1,13)), index=date.today().month-1, format_func=lambda m: calendar.month_name[m], key="bln_rekap")
+        with c2: thn = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_rekap")
         tab_rg, tab_rs = st.tabs(["Kehadiran Guru","Kehadiran Siswa"])
         with tab_rg:
             df_rg = get_absen_guru_rekap(bln, thn)
@@ -299,7 +299,7 @@ if role == "kepsek":
                     file_name=f"rekap_guru_{bln}_{thn}.csv", mime="text/csv", use_container_width=True)
         with tab_rs:
             all_kls_rs = sorted(set(get_all_guru()["kelas"].dropna().unique())-{"Semua Tingkat"})
-            kls_rs = st.selectbox("Pilih kelas:", all_kls_rs)
+            kls_rs = st.selectbox("Pilih kelas:", all_kls_rs, key="kls_rs_rekap")
             df_rs  = get_absen_siswa_rekap(kls_rs, bln, thn)
             if df_rs.empty or df_rs["total_hari"].sum()==0: st.info("Belum ada data.")
             else:
@@ -312,7 +312,7 @@ if role == "kepsek":
     with tab_data:
         st.markdown('<div class="alrt blue">Guru wali kelas bisa menambah siswa sendiri melalui tab <b>Absen Siswa</b>.</div>', unsafe_allow_html=True)
         all_kls_d = sorted(set(get_all_guru()["kelas"].dropna().unique())-{"Semua Tingkat"})
-        kls_d = st.selectbox("Pilih kelas:", all_kls_d)
+        kls_d = st.selectbox("Pilih kelas:", all_kls_d, key="kls_d_data")
         df_ex = get_siswa_by_kelas(kls_d)
         st.caption(f"{len(df_ex)} siswa terdaftar di {kls_d}")
         names_in = st.text_area("Nama siswa (satu nama per baris):", placeholder="Ahmad Fauzan\nBunga Ramadhani", height=140)
@@ -465,7 +465,7 @@ elif role == "guru":
         df_siswa = get_siswa_by_kelas(kelas_aktif)
 
         with st.expander(f"{'Daftar siswa belum ada — tambah di sini' if df_siswa.empty else f'Kelola daftar siswa ({len(df_siswa)} siswa terdaftar)'}", expanded=df_siswa.empty):
-            metode = st.radio("Cara menambah siswa:", ["Ketik nama","Upload file","Edit data siswa"], horizontal=True)
+            metode = st.radio("Cara menambah siswa:", ["Ketik nama","Upload file","Edit data siswa"], horizontal=True, key="metode_siswa_radio")
             if metode == "Ketik nama":
                 ni = st.text_area("Tulis satu nama per baris:", placeholder="Ahmad Fauzan\nBunga Ramadhani\nCitra Dewi", height=150)
                 if st.button("Simpan Daftar Siswa", use_container_width=True, type="primary"):
@@ -495,7 +495,7 @@ elif role == "guru":
                     ce1, ce2 = st.columns(2)
                     with ce1: nis_e  = st.text_input("NIS:",   value=row_e.get("nis",""),   placeholder="Nomor Induk Siswa")
                     with ce2: nisn_e = st.text_input("NISN:",  value=row_e.get("nisn",""),  placeholder="Nomor Induk Siswa Nasional")
-                    fase_e  = st.selectbox("Fase:", ["A","B","C"], index=["A","B","C"].index(row_e.get("fase","A")) if row_e.get("fase") in ["A","B","C"] else 0)
+                    fase_e  = st.selectbox("Fase:", ["A","B","C"], index=["A","B","C"].index(row_e.get("fase","A")) if row_e.get("fase") in ["A","B","C"] else 0, key="_ukey8")
                     almt_e  = st.text_input("Alamat:", value=row_e.get("alamat",""), placeholder="Alamat rumah siswa")
                     if st.button("Simpan Data Siswa", type="primary", use_container_width=True):
                         update_siswa_info(sid_e, nis_e, nisn_e, almt_e, fase_e)
@@ -555,9 +555,9 @@ elif role == "guru":
             st.warning(f"Belum ada data siswa untuk {kelas_nilai}. Tambahkan di tab Absen Siswa.")
         else:
             c1, c2, c3 = st.columns(3)
-            with c1: sem_n = st.selectbox("Semester:", ["Ganjil","Genap"], key="sem_nv")
-            with c2: thn_n = st.selectbox("Tahun Ajaran:", THN_LIST, index=1, key="thn_nv")
-            with c3: mp_n  = st.selectbox("Mata Pelajaran:", mapel_list if mapel_list else ["— tambah di tab Profil —"], key="mp_nv")
+            with c1: sem_n = st.selectbox("Semester:", ["Ganjil","Genap"], key="sem_n_guru")
+            with c2: thn_n = st.selectbox("Tahun Ajaran:", THN_LIST, index=1, key="thn_n_guru")
+            with c3: mp_n  = st.selectbox("Mata Pelajaran:", mapel_list if mapel_list else ["— tambah di tab Profil —"], key="mp_n_guru")
 
             st.markdown("---")
             sub_input, sub_rekap, sub_rapor = st.tabs(["Input Nilai TP","Rekap Nilai","Generate Rapor"])
@@ -657,7 +657,7 @@ elif role == "guru":
 
                 with cr2:
                     st.markdown("*Rekap nilai TP per mapel (Excel)*")
-                    mapel_xl = st.selectbox("Pilih mapel:", mapel_list if mapel_list else ["—"], key="mp_xl")
+                    mapel_xl = st.selectbox("Pilih mapel:", mapel_list if mapel_list else ["—"], key="mp_xl_guru")
                     if st.button("Buat Rekap Excel", use_container_width=True, key="btn_xl"):
                         df_xl = get_nilai_tp_kelas(kelas_nilai, sem_n, thn_n, mapel_xl)
                         sl    = [(int(r["id"]),r["nama"]) for _,r in df_siswa_n.iterrows()]
@@ -698,11 +698,11 @@ elif role == "guru":
         with st.form("form_jurnal", clear_on_submit=True):
             c1, c2 = st.columns(2)
             with c1:
-                tgl_j = st.date_input("Tanggal:", value=date.today())
-                mp_j  = st.selectbox("Mata pelajaran:", mapel_list if mapel_list else ["—"])
+                tgl_j = st.date_input("Tanggal:", value=date.today(), key="_ukey9")
+                mp_j  = st.selectbox("Mata pelajaran:", mapel_list if mapel_list else ["—"], key="_ukey10")
             with c2:
                 if is_bidstudi:
-                    kls_j = st.selectbox("Kelas yang diajar:", get_semua_kelas(), key="jg_kelas_sel")
+                    kls_j = st.selectbox("Kelas yang diajar:", get_semua_kelas(), key="jg_kelas_sel_guru")
                 else:
                     kls_j = st.text_input("Kelas:", value=kelas_guru)
                 topik = st.text_input("Topik / Materi:", placeholder="Contoh: Pecahan senilai")
@@ -733,7 +733,7 @@ elif role == "guru":
             with st.form("form_ag_gr"):
                 judul = st.text_input("Judul agenda:", placeholder="Contoh: Kunjungan Belajar Kelas III")
                 c1, c2 = st.columns(2)
-                with c1: kat = st.selectbox("Kategori:", KATEGORI)
+                with c1: kat_ks = st.selectbox("Kategori:", KATEGORI, key="kat_agenda_ks")
                 with c2: tgl_ag = st.date_input("Tanggal:", value=date.today(), key="tgl_ag_gr")
                 desk = st.text_area("Keterangan:", placeholder="Informasi tambahan untuk wali murid...")
                 if st.form_submit_button("Simpan Agenda", use_container_width=True):
@@ -772,7 +772,7 @@ elif role == "guru":
         if mapel_list:
             pills = " ".join([f'<span class="bdg bdg-blue" style="margin:2px;font-size:12px;padding:4px 12px">{m}</span>' for m in mapel_list])
             st.markdown(f'<div style="margin-bottom:14px">{pills}</div>', unsafe_allow_html=True)
-            mh = st.selectbox("Hapus mata pelajaran:", ["— pilih —"]+mapel_list)
+            mh = st.selectbox("Hapus mata pelajaran:", ["— pilih —"]+mapel_list, key="mh_profil")
             if st.button("Hapus", key="btn_hapus") and mh != "— pilih —":
                 delete_mapel_guru(guru_id, mh); st.success(f"{mh} dihapus."); st.rerun()
         else:
@@ -788,7 +788,7 @@ elif role == "guru":
         st.markdown("---")
         st.markdown("**Tambah mata pelajaran:**")
         SARAN = ["Tematik","Matematika","Bahasa Indonesia","Bahasa Inggris","IPA","IPS","PPKn","SBdP","PJOK","PAI","PADB","B. Arab","TIK","Tahfidh","Mulok"]
-        mp_saran = st.selectbox("Pilih dari daftar:", ["— atau ketik di bawah —"]+SARAN)
+        mp_saran = st.selectbox("Pilih dari daftar:", ["— atau ketik di bawah —"]+SARAN, key="mp_saran_profil")
         mp_man   = st.text_input("Atau ketik nama mata pelajaran:", placeholder="Contoh: Seni Budaya")
         mp_final = mp_man.strip() if mp_man.strip() else (mp_saran if mp_saran!="— atau ketik di bawah —" else "")
         if st.button("Tambah Mata Pelajaran", type="primary", use_container_width=True):
@@ -817,7 +817,7 @@ elif role == "walimurid":
         if not semua_kelas:
             st.info("Data kelas belum tersedia.")
         else:
-            kelas_wm = st.selectbox("Pilih kelas anak Anda:", semua_kelas)
+            kelas_wm = st.selectbox("Pilih kelas anak Anda:", semua_kelas, key="kelas_wm_sel")
             df_jk    = get_jurnal_by_kelas(kelas_wm)
             if df_jk.empty:
                 st.markdown(f'<div class="alrt blue">Belum ada catatan kegiatan dari guru kelas <b>{kelas_wm}</b>.<br><span style="font-size:13px">Catatan akan muncul setelah guru mengisi jurnal harian.</span></div>', unsafe_allow_html=True)
