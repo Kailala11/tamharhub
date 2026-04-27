@@ -380,9 +380,10 @@ elif role == "guru":
         st.error("Data guru tidak ditemukan. Hubungi administrator.")
         st.stop()
 
-    kelas_list = get_kelas_guru(guru_id)   # support multi wali kelas
-    kelas_guru = kelas_list[0] if kelas_list else guru_info["kelas"]
-    mapel_list = get_mapel_guru(guru_id)
+    kelas_list  = get_kelas_guru(guru_id)   # support multi wali kelas
+    kelas_guru  = kelas_list[0] if kelas_list else guru_info["kelas"]
+    mapel_list  = get_mapel_guru(guru_id)
+    is_bidstudi = guru_info["kelas"] == "Semua Tingkat"
 
     # ── Onboarding: cek apakah guru sudah setup mapel ──────────
     if not mapel_list:
@@ -402,9 +403,15 @@ elif role == "guru":
           </div>
         </div>""".format(nama=guru_info["nama"].split(",")[0]), unsafe_allow_html=True)
 
-    tab_ag, tab_as, tab_nv, tab_jg, tab_agnd, tab_profil = st.tabs([
-        "Absensi Saya", "Absen Siswa", "Nilai & Rapor", "Jurnal Harian", "Agenda", "Profil & Mapel"
-    ])
+    if is_bidstudi:
+        tab_ag, tab_nv, tab_jg, tab_agnd, tab_profil = st.tabs([
+            "Absensi Saya", "Nilai Siswa", "Jurnal Harian", "Agenda", "Profil & Mapel"
+        ])
+        tab_as = None
+    else:
+        tab_ag, tab_as, tab_nv, tab_jg, tab_agnd, tab_profil = st.tabs([
+            "Absensi Saya", "Absen Siswa", "Nilai & Rapor", "Jurnal Harian", "Agenda", "Profil & Mapel"
+        ])
 
     with tab_ag:
         existing   = get_status_absen_guru(guru_id, today_str)
