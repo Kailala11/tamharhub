@@ -415,7 +415,7 @@ elif role == "guru":
         <div style="background:#fff;border:1px solid #e4e8f0;border-radius:14px;
              padding:20px;margin-bottom:14px">
           <div style="font-size:17px;font-weight:700;color:#1a1d2e">{guru_info['nama']}</div>
-          <div style="font-size:13px;color:#9aa0b8;margin-top:3px">{_kls_label}</div>
+          <div style="font-size:13px;color:#9aa0b8;margin-top:3px">{"Guru Bidang Studi" if guru_info["kelas"]=="Semua Tingkat" else (", ".join(kelas_list) if len(kelas_list)>1 else kelas_guru)}</div>
           <div style="font-size:12px;color:#9aa0b8;margin-top:6px;font-family:'DM Mono',monospace">
             {', '.join(mapel_list) if mapel_list else 'Belum ada mata pelajaran — tambah di tab Profil'}
           </div>
@@ -754,7 +754,7 @@ elif role == "guru":
         st.markdown(f"""
         <div style="background:#fff;border:1px solid #e4e8f0;border-radius:12px;padding:20px;margin-bottom:16px">
           <div style="font-size:17px;font-weight:700;color:#1a1d2e">{guru_info['nama']}</div>
-          <div style="font-size:14px;color:#9aa0b8;margin-top:4px">{_kls_label}</div>
+          <div style="font-size:14px;color:#9aa0b8;margin-top:4px">{"Guru Bidang Studi" if guru_info["kelas"]=="Semua Tingkat" else (", ".join(kelas_list) if len(kelas_list)>1 else kelas_guru)}</div>
         </div>""", unsafe_allow_html=True)
 
         # NUPTK
