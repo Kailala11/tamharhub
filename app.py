@@ -433,7 +433,7 @@ elif role == "guru":
             st.markdown(alrt(f"Status hari ini sudah tercatat: <b>{STATUS_LABEL_SHORT[cur_status]}</b>. Anda bisa mengubahnya di bawah.", STATUS_COLOR[cur_status]), unsafe_allow_html=True)
 
         st.markdown("**Pilih status kehadiran Anda:**")
-        status_baru = st.radio("", ["H","A","I","S"],
+        status_baru = st.radio("Status kehadiran:", ["H","A","I","S"],
             index=["H","A","I","S"].index(cur_status) if cur_status and cur_status in ["H","A","I","S"] else 0,
             format_func=lambda x: STATUS_LABEL[x], horizontal=True, label_visibility="collapsed")
         ket = st.text_input("Keterangan (opsional):", value=cur_ket,
