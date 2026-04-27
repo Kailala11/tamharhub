@@ -750,3 +750,328 @@ def generate_rekap_tp_excel(
     ws.freeze_panes = ws.cell(8, 3)
     wb.save(buf)
     return buf.getvalue()
+
+
+# ── CETAK ABSENSI PDF ─────────────────────────────────────────────
+
+def generate_absen_guru_pdf(
+    bulan: int,
+    tahun: int,
+    df_harian: pd.DataFrame,   # cols: nama, kelas, tanggal, status
+    df_rekap:  pd.DataFrame,   # cols: nama, kelas, hadir, alpa, izin, sakit, total_hari
+) -> bytes:
+    """
+    Generate PDF absensi guru per bulan — A4 landscape.
+    Halaman 1: Tabel harian (nama × tanggal).
+    Halaman 2: Rekapitulasi (nama, total H/A/I/S).
+    """
+    import calendar as cal_mod
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import PageBreak
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        leftMargin=1.2*cm, rightMargin=1.2*cm,
+        topMargin=1.2*cm, bottomMargin=1.2*cm
+    )
+
+    nama_bulan = cal_mod.month_name[bulan]
+    jumlah_hari = cal_mod.monthrange(tahun, bulan)[1]
+
+    def sty(name, size=8, bold=False, align=TA_CENTER, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.3, spaceAfter=0, spaceBefore=0)
+
+    W_L = landscape(A4)[0] - 2.4*cm  # usable width landscape
+
+    thin  = colors.HexColor("#cccccc")
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+
+    story = []
+
+    # ── HALAMAN 1: TABEL HARIAN ───────────────────────────────────
+    story.append(Paragraph(f"DAFTAR HADIR GURU — {nama_bulan.upper()} {tahun}", sty("T", 11, True)))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S", 9)))
+    story.append(Spacer(1, 6))
+
+    # Build pivot: nama × tanggal
+    status_map = {}
+    if not df_harian.empty:
+        for _, r in df_harian.iterrows():
+            key = (r.get("nama",""), str(r.get("tanggal","")))
+            status_map[key] = r.get("status","")
+
+    guru_list = df_rekap["nama"].tolist() if not df_rekap.empty else []
+
+    # Column widths: nama(3cm) + kelas(3cm) + 31 hari(0.55cm each)
+    col_w_h = [3*cm, 2.5*cm] + [0.55*cm]*jumlah_hari + [0.7*cm, 0.7*cm, 0.7*cm, 0.7*cm]
+    
+    hdr_row = [
+        Paragraph("Nama Guru", sty("h",7,True,TA_LEFT,colors.white)),
+        Paragraph("Kelas", sty("h",7,True,TA_CENTER,colors.white)),
+    ] + [
+        Paragraph(str(d), sty("h",6,True,TA_CENTER,colors.white))
+        for d in range(1, jumlah_hari+1)
+    ] + [
+        Paragraph("H", sty("h",7,True,TA_CENTER,colors.white)),
+        Paragraph("A", sty("h",7,True,TA_CENTER,colors.white)),
+        Paragraph("I", sty("h",7,True,TA_CENTER,colors.white)),
+        Paragraph("S", sty("h",7,True,TA_CENTER,colors.white)),
+    ]
+
+    rows_h = [hdr_row]
+    for idx, (_, rec) in enumerate(df_rekap.iterrows()):
+        nama  = rec.get("nama","")
+        kelas = str(rec.get("kelas",""))[:12]
+        row   = [
+            Paragraph(nama.split(",")[0][:20], sty("d",6,False,TA_LEFT)),
+            Paragraph(kelas, sty("d",6,False,TA_CENTER)),
+        ]
+        for d in range(1, jumlah_hari+1):
+            tgl_str = f"{tahun}-{str(bulan).zfill(2)}-{str(d).zfill(2)}"
+            st = status_map.get((nama, tgl_str), "")
+            color = {"H":colors.HexColor("#1E6B2E"),"A":colors.HexColor("#C0281E"),
+                     "I":colors.HexColor("#8A6000"),"S":colors.HexColor("#1A4A9A")}.get(st, BLACK)
+            row.append(Paragraph(st, sty("d",6,False,TA_CENTER,color)))
+        row += [
+            Paragraph(str(int(rec.get("hadir",0))),  sty("d",6,True,TA_CENTER,colors.HexColor("#1E6B2E"))),
+            Paragraph(str(int(rec.get("alpa",0))),   sty("d",6,True,TA_CENTER,colors.HexColor("#C0281E"))),
+            Paragraph(str(int(rec.get("izin",0))),   sty("d",6,True,TA_CENTER,colors.HexColor("#8A6000"))),
+            Paragraph(str(int(rec.get("sakit",0))),  sty("d",6,True,TA_CENTER,colors.HexColor("#1A4A9A"))),
+        ]
+        rows_h.append(row)
+
+    tbl_h = Table(rows_h, colWidths=col_w_h, repeatRows=1)
+    tbl_h.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  hdr_c),
+        ("FONTSIZE",      (0,0),(-1,-1), 7),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,-1), 2),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 2),
+        ("BOX",           (0,0),(-1,-1), 0.5, thin),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, thin),
+        *[("BACKGROUND",(0,i),(-1,i), alt_c) for i in range(2,len(rows_h),2)],
+    ]))
+    story.append(tbl_h)
+
+    # ── HALAMAN 2: REKAPITULASI ───────────────────────────────────
+    story.append(PageBreak())
+    story.append(Paragraph(f"REKAPITULASI KEHADIRAN GURU — {nama_bulan.upper()} {tahun}", sty("T2",11,True)))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S2",9)))
+    story.append(Spacer(1, 8))
+
+    rkp_cols = [1*cm, 5*cm, 3*cm, 1.5*cm, 1.5*cm, 1.5*cm, 1.5*cm, 2*cm, 2*cm]
+    rkp_hdr  = [Paragraph(t, sty("rh",8,True,TA_CENTER,colors.white))
+                for t in ["No","Nama Guru","Kelas","Hadir","Alpa","Izin","Sakit","Total Hari","% Hadir"]]
+    rkp_rows = [rkp_hdr]
+    for idx, (_, r) in enumerate(df_rekap.iterrows(), 1):
+        total = r.get("total_hari",0) or 1
+        h     = int(r.get("hadir",0))
+        pct   = f"{h/total*100:.1f}%"
+        rkp_rows.append([
+            Paragraph(str(idx),              sty("rd",8,False,TA_CENTER)),
+            Paragraph(r.get("nama","").split(",")[0], sty("rd",8,False,TA_LEFT)),
+            Paragraph(str(r.get("kelas",""))[:15], sty("rd",8,False,TA_LEFT)),
+            Paragraph(str(h),                sty("rd",8,True,TA_CENTER,colors.HexColor("#1E6B2E"))),
+            Paragraph(str(int(r.get("alpa",0))),  sty("rd",8,True,TA_CENTER,colors.HexColor("#C0281E"))),
+            Paragraph(str(int(r.get("izin",0))),  sty("rd",8,True,TA_CENTER,colors.HexColor("#8A6000"))),
+            Paragraph(str(int(r.get("sakit",0))), sty("rd",8,True,TA_CENTER,colors.HexColor("#1A4A9A"))),
+            Paragraph(str(int(r.get("total_hari",0))), sty("rd",8,False,TA_CENTER)),
+            Paragraph(pct,                   sty("rd",8,False,TA_CENTER)),
+        ])
+
+    rkp_tbl = Table(rkp_rows, colWidths=rkp_cols, repeatRows=1)
+    rkp_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  hdr_c),
+        ("FONTSIZE",      (0,0),(-1,-1), 8),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+        ("BOX",           (0,0),(-1,-1), 0.5, thin),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, thin),
+        *[("BACKGROUND",(0,i),(-1,i), alt_c) for i in range(2,len(rkp_rows),2)],
+    ]))
+    story.append(rkp_tbl)
+
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}", sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_absen_siswa_pdf(
+    kelas: str,
+    bulan: int,
+    tahun: int,
+    df_harian: pd.DataFrame,
+    df_rekap:  pd.DataFrame,
+) -> bytes:
+    """PDF absensi siswa per kelas per bulan — A4 landscape."""
+    import calendar as cal_mod
+    from reportlab.lib.pagesizes import landscape
+    from reportlab.platypus import PageBreak
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=1.2*cm, rightMargin=1.2*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    nama_bulan   = cal_mod.month_name[bulan]
+    jumlah_hari  = cal_mod.monthrange(tahun, bulan)[1]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=8, bold=False, align=TA_CENTER, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.3, spaceAfter=0, spaceBefore=0)
+
+    # Build status map
+    status_map = {}
+    if not df_harian.empty:
+        for _, r in df_harian.iterrows():
+            status_map[(r.get("nama",""), str(r.get("tanggal","")))] = r.get("status","")
+
+    story = []
+
+    # Halaman 1: Harian
+    story.append(Paragraph(f"DAFTAR HADIR SISWA — {kelas.upper()}", sty("T",10,True)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S",9)))
+    story.append(Spacer(1,6))
+
+    col_w = [0.8*cm, 3.5*cm] + [0.52*cm]*jumlah_hari + [0.65*cm]*4
+    hdr   = [Paragraph("No",sty("h",7,True,TA_CENTER,colors.white)),
+             Paragraph("Nama Siswa",sty("h",7,True,TA_LEFT,colors.white))] + \
+            [Paragraph(str(d),sty("h",6,True,TA_CENTER,colors.white)) for d in range(1,jumlah_hari+1)] + \
+            [Paragraph(t,sty("h",7,True,TA_CENTER,colors.white)) for t in ["H","A","I","S"]]
+
+    rows = [hdr]
+    for idx,(_, rec) in enumerate(df_rekap.iterrows(),1):
+        nama = rec.get("nama","")
+        row  = [Paragraph(str(idx),sty("d",6,False,TA_CENTER)),
+                Paragraph(nama[:22],sty("d",6,False,TA_LEFT))]
+        for d in range(1,jumlah_hari+1):
+            tgl = f"{tahun}-{str(bulan).zfill(2)}-{str(d).zfill(2)}"
+            st  = status_map.get((nama,tgl),"")
+            col = {"H":colors.HexColor("#1E6B2E"),"A":colors.HexColor("#C0281E"),
+                   "I":colors.HexColor("#8A6000"),"S":colors.HexColor("#1A4A9A")}.get(st,BLACK)
+            row.append(Paragraph(st,sty("d",6,False,TA_CENTER,col)))
+        row += [Paragraph(str(int(rec.get(k,0))),sty("d",6,True,TA_CENTER)) for k in ["hadir","alpa","izin","sakit"]]
+        rows.append(row)
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+        ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+
+    # Halaman 2: Rekap
+    story.append(PageBreak())
+    story.append(Paragraph(f"REKAPITULASI KEHADIRAN SISWA — {kelas.upper()}", sty("T2",10,True)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S2",9)))
+    story.append(Spacer(1,8))
+
+    rkp_cols = [1*cm,5*cm,1.8*cm,1.8*cm,1.8*cm,1.8*cm,2*cm,2.5*cm]
+    rkp_hdr  = [Paragraph(t,sty("rh",8,True,TA_CENTER,colors.white))
+                for t in ["No","Nama Siswa","Hadir","Alpa","Izin","Sakit","Total Hari","% Hadir"]]
+    rkp_rows = [rkp_hdr]
+    for idx,(_, r) in enumerate(df_rekap.iterrows(),1):
+        total = r.get("total_hari",0) or 1
+        h     = int(r.get("hadir",0))
+        pct   = f"{h/total*100:.1f}%"
+        rkp_rows.append([
+            Paragraph(str(idx),sty("rd",8,False,TA_CENTER)),
+            Paragraph(r.get("nama","")[:25],sty("rd",8,False,TA_LEFT)),
+            Paragraph(str(h),sty("rd",8,True,TA_CENTER,colors.HexColor("#1E6B2E"))),
+            Paragraph(str(int(r.get("alpa",0))),sty("rd",8,True,TA_CENTER,colors.HexColor("#C0281E"))),
+            Paragraph(str(int(r.get("izin",0))),sty("rd",8,True,TA_CENTER,colors.HexColor("#8A6000"))),
+            Paragraph(str(int(r.get("sakit",0))),sty("rd",8,True,TA_CENTER,colors.HexColor("#1A4A9A"))),
+            Paragraph(str(int(r.get("total_hari",0))),sty("rd",8,False,TA_CENTER)),
+            Paragraph(pct,sty("rd",8,False,TA_CENTER)),
+        ])
+
+    rkp_tbl = Table(rkp_rows, colWidths=rkp_cols, repeatRows=1)
+    rkp_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rkp_rows),2)],
+    ]))
+    story.append(rkp_tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                            sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_jurnal_pdf(
+    guru_nama: str,
+    kelas: str,
+    bulan: int,
+    tahun: int,
+    df_jurnal: pd.DataFrame,
+) -> bytes:
+    """PDF jurnal harian guru per bulan — A4 portrait."""
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+    W     = A4[0] - 3*cm
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"JURNAL HARIAN MENGAJAR", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph(f"{guru_nama}", sty("S",10,False,TA_CENTER)))
+    story.append(Paragraph(f"Kelas: {kelas} | {nama_bulan} {tahun} | {NAMA_SEKOLAH}", sty("S2",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [1.2*cm, 2*cm, 2.5*cm, 2.5*cm, 5.5*cm, 3.3*cm]
+    hdr   = [Paragraph(t,sty("h",8,True,TA_CENTER,colors.white))
+             for t in ["No","Tanggal","Mapel","Topik","Aktivitas Pembelajaran","Catatan"]]
+    rows  = [hdr]
+    for idx,(_, j) in enumerate(df_jurnal.iterrows(),1):
+        rows.append([
+            Paragraph(str(idx),sty("d",8,False,TA_CENTER)),
+            Paragraph(str(j.get("tanggal","")),sty("d",8)),
+            Paragraph(str(j.get("mapel","")),sty("d",8)),
+            Paragraph(str(j.get("topik","")),sty("d",8)),
+            Paragraph(str(j.get("aktivitas","")),sty("d",8)),
+            Paragraph(str(j.get("catatan","")),sty("d",8)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),12),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                            sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
+    doc.build(story)
+    return buf.getvalue()

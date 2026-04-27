@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
 import calendar
-from rapor import generate_rapor_pdf, generate_rekap_excel, generate_rekap_tp_excel
+from rapor import generate_rapor_pdf, generate_rekap_excel, generate_rekap_tp_excel, generate_absen_guru_pdf, generate_absen_siswa_pdf, generate_jurnal_pdf
 from ui_helpers import (
     CSS, masthead, kpi_card, alrt, jurnal_card, agenda_card,
     STATUS_LABEL, STATUS_LABEL_SHORT, STATUS_COLOR,
@@ -31,6 +31,8 @@ from database import (
     upsert_ekskul, get_ekskul_siswa,
     upsert_catatan, get_catatan, get_absen_count_siswa,
     init_guru_kelas_table, get_kelas_guru, tambah_guru_kelas, hapus_guru_kelas,
+    upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
+    init_file_metadata_table, simpan_metadata_file, get_files_guru, get_all_files_by_kategori, hapus_metadata_file,
 )
 
 # ── Init ───────────────────────────────────────────────────────────
@@ -295,8 +297,26 @@ if role == "kepsek":
             if df_rg.empty or df_rg["total_hari"].sum()==0: st.info("Belum ada data.")
             else:
                 st.dataframe(df_rg, use_container_width=True, hide_index=True)
-                st.download_button("Download CSV", data=df_rg.to_csv(index=False,encoding="utf-8-sig").encode("utf-8-sig"),
-                    file_name=f"rekap_guru_{bln}_{thn}.csv", mime="text/csv", use_container_width=True)
+                cr1, cr2 = st.columns(2)
+                with cr1:
+                    st.download_button("Download CSV", data=df_rg.to_csv(index=False,encoding="utf-8-sig").encode("utf-8-sig"),
+                        file_name=f"rekap_guru_{bln}_{thn}.csv", mime="text/csv", use_container_width=True)
+                with cr2:
+                    if st.button("Cetak PDF Absensi Guru", use_container_width=True, key="btn_pdf_absen_guru"):
+                        # Ambil data harian
+                        import sqlite3 as _sq
+                        conn_pdf = get_conn()
+                        df_h_guru = pd.read_sql("""
+                            SELECT g.nama, g.kelas, a.tanggal, a.status
+                            FROM absen_guru a JOIN guru g ON g.id=a.guru_id
+                            WHERE strftime('%m',a.tanggal)=? AND strftime('%Y',a.tanggal)=?
+                            ORDER BY g.nama, a.tanggal
+                        """, conn_pdf, params=[str(bln).zfill(2), str(thn)])
+                        conn_pdf.close()
+                        pdf_ag = generate_absen_guru_pdf(bln, thn, df_h_guru, df_rg)
+                        st.download_button("Unduh PDF", data=pdf_ag,
+                            file_name=f"absensi_guru_{bln}_{thn}.pdf",
+                            mime="application/pdf", use_container_width=True, key="dl_pdf_ag")
         with tab_rs:
             all_kls_rs = sorted(set(get_all_guru()["kelas"].dropna().unique())-{"Semua Tingkat"})
             kls_rs = st.selectbox("Pilih kelas:", all_kls_rs, key="kls_rs_rekap")
@@ -305,11 +325,46 @@ if role == "kepsek":
             else:
                 st.dataframe(df_rs, use_container_width=True, hide_index=True,
                     column_config={"pct_hadir": st.column_config.ProgressColumn("Kehadiran %", min_value=0, max_value=100)})
-                st.download_button("Download CSV", data=df_rs.to_csv(index=False,encoding="utf-8-sig").encode("utf-8-sig"),
-                    file_name=f"rekap_siswa_{kls_rs.replace(' ','_')}_{bln}_{thn}.csv",
-                    mime="text/csv", use_container_width=True)
+                cs1, cs2 = st.columns(2)
+                with cs1:
+                    st.download_button("Download CSV", data=df_rs.to_csv(index=False,encoding="utf-8-sig").encode("utf-8-sig"),
+                        file_name=f"rekap_siswa_{kls_rs.replace(' ','_')}_{bln}_{thn}.csv",
+                        mime="text/csv", use_container_width=True)
+                with cs2:
+                    if st.button("Cetak PDF Absensi Siswa", use_container_width=True, key="btn_pdf_absen_siswa"):
+                        conn_pdf2 = get_conn()
+                        df_h_siswa = pd.read_sql("""
+                            SELECT s.nama, a.tanggal, a.status
+                            FROM absen_siswa a JOIN siswa s ON s.id=a.siswa_id
+                            WHERE s.kelas=? AND strftime('%m',a.tanggal)=? AND strftime('%Y',a.tanggal)=?
+                            ORDER BY s.nama, a.tanggal
+                        """, conn_pdf2, params=[kls_rs, str(bln).zfill(2), str(thn)])
+                        conn_pdf2.close()
+                        pdf_as = generate_absen_siswa_pdf(kls_rs, bln, thn, df_h_siswa, df_rs)
+                        st.download_button("Unduh PDF", data=pdf_as,
+                            file_name=f"absensi_siswa_{kls_rs.replace(' ','_')}_{bln}_{thn}.pdf",
+                            mime="application/pdf", use_container_width=True, key="dl_pdf_as")
 
     with tab_data:
+        # Program Mengajar view for kepsek
+        st.markdown("**File Program Mengajar dari Semua Guru**")
+        pm_kat_ks = st.selectbox("Kategori:", ["Prota","Promes","Silabus","RPP Tahunan","RPP Harian"], key="pm_kat_ks")
+        bucket_ks = "rpp-harian" if pm_kat_ks == "RPP Harian" else "program-mengajar"
+        df_pm_ks  = get_all_files_by_kategori(pm_kat_ks)
+        if df_pm_ks.empty:
+            st.info(f"Belum ada file {pm_kat_ks} dari guru manapun.")
+        else:
+            for _, f_row in df_pm_ks.iterrows():
+                c1, c2, c3 = st.columns([3,2,1.5])
+                with c1: st.markdown(f"📄 **{f_row['nama_file']}**")
+                with c2: st.markdown(f"*{f_row.get('guru_nama','').split(',')[0]} — {f_row.get('kelas','')}*")
+                with c3:
+                    file_bytes_ks = download_file_storage(bucket_ks, f_row["path"])
+                    if file_bytes_ks:
+                        st.download_button("Download", data=file_bytes_ks,
+                            file_name=f_row["nama_file"], key=f"dl_ks_{f_row['id']}",
+                            use_container_width=True)
+        st.markdown("---")
         st.markdown('<div class="alrt blue">Guru wali kelas bisa menambah siswa sendiri melalui tab <b>Absen Siswa</b>.</div>', unsafe_allow_html=True)
         all_kls_d = sorted(set(get_all_guru()["kelas"].dropna().unique())-{"Semua Tingkat"})
         kls_d = st.selectbox("Pilih kelas:", all_kls_d, key="kls_d_data")
@@ -404,13 +459,13 @@ elif role == "guru":
         </div>""".format(nama=guru_info["nama"].split(",")[0]), unsafe_allow_html=True)
 
     if is_bidstudi:
-        tab_ag, tab_nv, tab_jg, tab_agnd, tab_profil = st.tabs([
-            "Absensi Saya", "Nilai Siswa", "Jurnal Harian", "Agenda", "Profil & Mapel"
+        tab_ag, tab_nv, tab_jg, tab_agnd, tab_pm, tab_profil = st.tabs([
+            "Absensi Saya", "Nilai Siswa", "Jurnal Harian", "Agenda", "Program Mengajar", "Profil & Mapel"
         ])
         tab_as = None
     else:
-        tab_ag, tab_as, tab_nv, tab_jg, tab_agnd, tab_profil = st.tabs([
-            "Absensi Saya", "Absen Siswa", "Nilai & Rapor", "Jurnal Harian", "Agenda", "Profil & Mapel"
+        tab_ag, tab_as, tab_nv, tab_jg, tab_agnd, tab_pm, tab_profil = st.tabs([
+            "Absensi Saya", "Absen Siswa", "Nilai & Rapor", "Jurnal Harian", "Agenda", "Program Mengajar", "Profil & Mapel"
         ])
 
     with tab_ag:
@@ -723,6 +778,49 @@ elif role == "guru":
                     simpan_jurnal(guru_id, str(tgl_j), kls_j, mp_j, topik, akt, media, ctt)
                     st.success("Jurnal berhasil disimpan. Kepala sekolah dan wali murid dapat melihatnya.")
 
+        # Upload RPP Harian
+        st.markdown("---")
+        st.markdown("**Upload RPP Harian (opsional):**")
+        tgl_rpp = st.date_input("Tanggal RPP:", value=date.today(), key="tgl_rpp_up")
+        rpp_file = st.file_uploader("Pilih file RPP (PDF/Word):", type=["pdf","docx","doc"], key="rpp_uploader")
+        if rpp_file and st.button("Upload RPP", use_container_width=True, key="btn_rpp_up"):
+            rpp_bytes = rpp_file.read()
+            path_rpp  = f"{guru_id}/{tgl_rpp}/{rpp_file.name}"
+            ok = upload_file_storage("rpp-harian", path_rpp, rpp_bytes, rpp_file.type)
+            if ok:
+                simpan_metadata_file(guru_id, "rpp-harian", path_rpp, rpp_file.name, "RPP Harian", len(rpp_bytes))
+                st.success(f"RPP '{rpp_file.name}' berhasil diupload.")
+            else:
+                st.error("Gagal upload RPP.")
+
+        # Cetak jurnal PDF per bulan
+        st.markdown("---")
+        st.markdown("**Cetak Jurnal per Bulan:**")
+        cj1, cj2 = st.columns(2)
+        with cj1:
+            bln_j = st.selectbox("Bulan:", list(range(1,13)),
+                                  index=date.today().month-1,
+                                  format_func=lambda m: __import__('calendar').month_name[m],
+                                  key="bln_jurnal_pdf")
+        with cj2:
+            thn_j = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_jurnal_pdf")
+        if st.button("Download Jurnal PDF", use_container_width=True, key="btn_jurnal_pdf"):
+            import calendar as _cal
+            df_j_pdf = get_jurnal_guru(guru_id, limit=200)
+            if not df_j_pdf.empty:
+                df_j_pdf["bln"] = pd.to_datetime(df_j_pdf["tanggal"], errors="coerce").dt.month
+                df_j_pdf["thn"] = pd.to_datetime(df_j_pdf["tanggal"], errors="coerce").dt.year
+                df_j_bulan = df_j_pdf[(df_j_pdf["bln"]==bln_j)&(df_j_pdf["thn"]==thn_j)]
+            else:
+                df_j_bulan = pd.DataFrame()
+            if df_j_bulan.empty:
+                st.warning(f"Belum ada jurnal untuk bulan {_cal.month_name[bln_j]} {thn_j}.")
+            else:
+                pdf_j = generate_jurnal_pdf(guru_info["nama"], kelas_guru, bln_j, thn_j, df_j_bulan)
+                st.download_button("Unduh PDF Jurnal", data=pdf_j,
+                    file_name=f"jurnal_{guru_id}_{bln_j}_{thn_j}.pdf",
+                    mime="application/pdf", use_container_width=True)
+
         st.markdown("---")
         st.markdown("**Jurnal yang sudah ditulis:**")
         df_jg = get_jurnal_guru(guru_id, limit=20)
@@ -756,6 +854,56 @@ elif role == "guru":
             st.markdown("**Agenda mendatang:**")
             for _, ag in df_ag_gr.iterrows():
                 st.markdown(agenda_card(ag), unsafe_allow_html=True)
+
+    with tab_pm:
+        st.markdown("**Program Mengajar**")
+        st.caption("Upload file Prota, Promes, Silabus, dan RPP. Kepala sekolah dapat melihat semua file yang diupload.")
+
+        KATEGORI_PM = ["Prota", "Promes", "Silabus", "RPP Tahunan"]
+        cat_pm = st.selectbox("Kategori file:", KATEGORI_PM, key="cat_pm_sel")
+
+        uploaded_pm = st.file_uploader(
+            f"Upload file {cat_pm} (PDF, Word, Excel):",
+            type=["pdf","docx","doc","xlsx","xls","pptx"],
+            key="uploader_pm"
+        )
+        if uploaded_pm and st.button("Upload File", type="primary", use_container_width=True, key="btn_upload_pm"):
+            file_bytes = uploaded_pm.read()
+            path = f"{guru_id}/{cat_pm}/{uploaded_pm.name}"
+            ok = upload_file_storage("program-mengajar", path, file_bytes, uploaded_pm.type)
+            if ok:
+                simpan_metadata_file(guru_id, "program-mengajar", path, uploaded_pm.name, cat_pm, len(file_bytes))
+                st.success(f"File '{uploaded_pm.name}' berhasil diupload.")
+                st.rerun()
+            else:
+                st.error("Gagal upload. Coba lagi.")
+
+        st.markdown("---")
+        st.markdown("**File yang sudah diupload:**")
+        df_pm = get_files_guru(guru_id)
+        if df_pm.empty:
+            st.info("Belum ada file. Upload di atas.")
+        else:
+            for kat in KATEGORI_PM:
+                df_kat = df_pm[df_pm["kategori"]==kat]
+                if df_kat.empty: continue
+                st.markdown(f"**{kat}**")
+                for _, f_row in df_kat.iterrows():
+                    c1, c2, c3 = st.columns([4, 1.5, 1])
+                    with c1:
+                        st.markdown(f"📄 {f_row['nama_file']}")
+                    with c2:
+                        file_bytes = download_file_storage("program-mengajar", f_row["path"])
+                        if file_bytes:
+                            st.download_button("Download", data=file_bytes,
+                                file_name=f_row["nama_file"], key=f"dl_pm_{f_row['id']}",
+                                use_container_width=True)
+                    with c3:
+                        if st.button("Hapus", key=f"del_pm_{f_row['id']}"):
+                            delete_file_storage("program-mengajar", f_row["path"])
+                            hapus_metadata_file(int(f_row["id"]))
+                            st.success("File dihapus.")
+                            st.rerun()
 
     with tab_profil:
         st.markdown(f"""

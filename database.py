@@ -969,3 +969,134 @@ def run_migrations():
         pass
     conn.commit()
     conn.close()
+
+
+# ── SUPABASE STORAGE ──────────────────────────────────────────────
+
+SUPABASE_URL = "https://fodvxtulmrzzwtvirpuc.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZvZHZ4dHVsbXJ6end0dmlycHVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyNTY4OTIsImV4cCI6MjA5MjgzMjg5Mn0.kGByHoXbJf2VJlROfa6i8VeI1t1BUVySjvp5zRo4AjQ"
+
+def get_sb():
+    try:
+        from supabase import create_client
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:
+        return None
+
+def upload_file_storage(bucket: str, path: str, file_bytes: bytes, content_type: str = "application/octet-stream") -> bool:
+    """Upload file ke Supabase Storage."""
+    sb = get_sb()
+    if not sb:
+        return False
+    try:
+        sb.storage.from_(bucket).upload(
+            path, file_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+        return True
+    except Exception as e:
+        print(f"Upload error: {e}")
+        return False
+
+def list_files_storage(bucket: str, folder: str = "") -> list:
+    """List files di bucket/folder."""
+    sb = get_sb()
+    if not sb:
+        return []
+    try:
+        res = sb.storage.from_(bucket).list(folder)
+        return res or []
+    except Exception:
+        return []
+
+def download_file_storage(bucket: str, path: str) -> bytes:
+    """Download file dari Supabase Storage."""
+    sb = get_sb()
+    if not sb:
+        return b""
+    try:
+        res = sb.storage.from_(bucket).download(path)
+        return res
+    except Exception:
+        return b""
+
+def delete_file_storage(bucket: str, path: str) -> bool:
+    """Hapus file dari Supabase Storage."""
+    sb = get_sb()
+    if not sb:
+        return False
+    try:
+        sb.storage.from_(bucket).remove([path])
+        return True
+    except Exception:
+        return False
+
+def get_public_url(bucket: str, path: str) -> str:
+    """Dapatkan URL publik file (hanya untuk public bucket)."""
+    return f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
+
+# ── FILE METADATA DI DATABASE ─────────────────────────────────────
+
+def init_file_metadata_table():
+    conn = get_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_metadata (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            guru_id     INTEGER REFERENCES guru(id),
+            bucket      TEXT NOT NULL,
+            path        TEXT NOT NULL,
+            nama_file   TEXT NOT NULL,
+            kategori    TEXT NOT NULL,
+            ukuran      INTEGER DEFAULT 0,
+            created_at  TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(bucket, path)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def simpan_metadata_file(guru_id, bucket, path, nama_file, kategori, ukuran=0):
+    conn = get_conn()
+    conn.execute("""
+        INSERT OR REPLACE INTO file_metadata
+            (guru_id, bucket, path, nama_file, kategori, ukuran)
+        VALUES (?,?,?,?,?,?)
+    """, (guru_id, bucket, path, nama_file, kategori, ukuran))
+    conn.commit()
+    conn.close()
+
+def get_files_guru(guru_id, kategori=None):
+    conn = get_conn()
+    if kategori:
+        df = pd.read_sql("""
+            SELECT f.*, g.nama as guru_nama FROM file_metadata f
+            JOIN guru g ON g.id=f.guru_id
+            WHERE f.guru_id=? AND f.kategori=?
+            ORDER BY f.created_at DESC
+        """, conn, params=[guru_id, kategori])
+    else:
+        df = pd.read_sql("""
+            SELECT f.*, g.nama as guru_nama FROM file_metadata f
+            JOIN guru g ON g.id=f.guru_id
+            WHERE f.guru_id=?
+            ORDER BY f.kategori, f.created_at DESC
+        """, conn, params=[guru_id])
+    conn.close()
+    return df
+
+def get_all_files_by_kategori(kategori):
+    conn = get_conn()
+    df = pd.read_sql("""
+        SELECT f.*, g.nama as guru_nama, g.kelas FROM file_metadata f
+        JOIN guru g ON g.id=f.guru_id
+        WHERE f.kategori=?
+        ORDER BY g.kelas, g.nama, f.created_at DESC
+    """, conn, params=[kategori])
+    conn.close()
+    return df
+
+def hapus_metadata_file(file_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM file_metadata WHERE id=?", (file_id,))
+    conn.commit()
+    conn.close()
