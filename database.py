@@ -932,29 +932,59 @@ def get_nilai_tp_siswa(siswa_id, semester, tahun_ajar, mapel):
 
 def get_nr_semua_mapel_siswa(siswa_id, semester, tahun_ajar):
     """Return NR per mapel untuk satu siswa — untuk rapor."""
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT mapel, nr, capaian_maksimal
-        FROM nilai_tp
-        WHERE siswa_id=? AND semester=? AND tahun_ajar=?
-        ORDER BY mapel
-    """, conn, params=[siswa_id, semester, tahun_ajar])
-    conn.close()
-    return df
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("nilai_tp").select("mapel,nr,capaian_maksimal")                .eq("siswa_id", siswa_id).eq("semester", semester).eq("tahun_ajar", tahun_ajar).execute()
+            return pd.DataFrame(res.data or [])
+        except Exception as e:
+            print(f"Supabase get_nr_semua_mapel_siswa error: {e}")
+    try:
+        conn = get_conn()
+        df = pd.read_sql("""
+            SELECT mapel, nr, capaian_maksimal
+            FROM nilai_tp
+            WHERE siswa_id=? AND semester=? AND tahun_ajar=?
+            ORDER BY mapel
+        """, conn, params=[siswa_id, semester, tahun_ajar])
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 def get_rekap_nr_kelas(kelas, semester, tahun_ajar):
     """Return pivot NR semua siswa x semua mapel — untuk rekap Excel."""
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT s.id as siswa_id, s.nama as siswa, n.mapel, n.nr, n.capaian_maksimal
-        FROM siswa s
-        LEFT JOIN nilai_tp n ON n.siswa_id=s.id
-            AND n.semester=? AND n.tahun_ajar=?
-        WHERE s.kelas=? AND s.status='Aktif'
-        ORDER BY s.nama, n.mapel
-    """, conn, params=[semester, tahun_ajar, kelas])
-    conn.close()
-    return df
+    sb = get_sb()
+    if sb:
+        try:
+            s_res = sb.table("siswa").select("id,nama").eq("kelas", kelas).eq("status","Aktif").execute()
+            siswa_list = s_res.data or []
+            if not siswa_list:
+                return pd.DataFrame()
+            sids = [s["id"] for s in siswa_list]
+            n_res = sb.table("nilai_tp").select("siswa_id,mapel,nr,capaian_maksimal")                .in_("siswa_id", sids).eq("semester", semester).eq("tahun_ajar", tahun_ajar).execute()
+            siswa_map = {s["id"]: s["nama"] for s in siswa_list}
+            rows = []
+            for n in (n_res.data or []):
+                rows.append({"siswa_id": n["siswa_id"], "siswa": siswa_map.get(n["siswa_id"],""),
+                             "mapel": n["mapel"], "nr": n["nr"], "capaian_maksimal": n.get("capaian_maksimal","")})
+            return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["siswa_id","siswa","mapel","nr","capaian_maksimal"])
+        except Exception as e:
+            print(f"Supabase get_rekap_nr_kelas error: {e}")
+    try:
+        conn = get_conn()
+        df = pd.read_sql("""
+            SELECT s.id as siswa_id, s.nama as siswa, n.mapel, n.nr, n.capaian_maksimal
+            FROM siswa s
+            LEFT JOIN nilai_tp n ON n.siswa_id=s.id
+                AND n.semester=? AND n.tahun_ajar=?
+            WHERE s.kelas=? AND s.status='Aktif'
+            ORDER BY s.nama, n.mapel
+        """, conn, params=[semester, tahun_ajar, kelas])
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 # ── MIGRATIONS ────────────────────────────────────────────────────
