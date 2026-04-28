@@ -31,6 +31,9 @@ from database import (
     upsert_ekskul, get_ekskul_siswa,
     upsert_catatan, get_catatan, get_absen_count_siswa,
     init_guru_kelas_table, get_kelas_guru, tambah_guru_kelas, hapus_guru_kelas,
+    init_nilai_tp_table, upsert_nilai_tp, get_nilai_tp_kelas,
+    get_nilai_tp_siswa, get_nr_semua_mapel_siswa, get_rekap_nr_kelas, hitung_nr, TP_COLS,
+    get_conn,
     upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
     init_file_metadata_table, simpan_metadata_file, get_files_guru, get_all_files_by_kategori, hapus_metadata_file,
 )
