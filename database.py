@@ -813,65 +813,122 @@ def hitung_nr(row_dict: dict) -> float:
     return round(sum(nums)/len(nums), 2) if nums else 0.0
 
 def upsert_nilai_tp(siswa_id, guru_id, kelas, semester, tahun_ajar, mapel, tp_dict, capaian=""):
-    """
-    tp_dict: {'tp1':90,'tp2':85,...,'asts':80,'asas':88}
-    Nilai yang tidak diisi = None (tidak dihitung di NR)
-    """
     nr = hitung_nr(tp_dict)
-    conn = get_conn()
-    conn.execute(f"""
-        INSERT INTO nilai_tp
-            (siswa_id,guru_id,kelas,semester,tahun_ajar,mapel,
-             tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,asts,asas,nr,capaian_maksimal,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))
-        ON CONFLICT(siswa_id,semester,tahun_ajar,mapel)
-        DO UPDATE SET
-            guru_id=excluded.guru_id, kelas=excluded.kelas,
-            tp1=excluded.tp1, tp2=excluded.tp2, tp3=excluded.tp3,
-            tp4=excluded.tp4, tp5=excluded.tp5, tp6=excluded.tp6,
-            tp7=excluded.tp7, tp8=excluded.tp8, tp9=excluded.tp9,
-            tp10=excluded.tp10, asts=excluded.asts, asas=excluded.asas,
-            nr=excluded.nr, capaian_maksimal=excluded.capaian_maksimal,
-            updated_at=datetime('now','localtime')
-    """, (
-        siswa_id, guru_id, kelas, semester, tahun_ajar, mapel,
-        tp_dict.get('tp1'), tp_dict.get('tp2'), tp_dict.get('tp3'),
-        tp_dict.get('tp4'), tp_dict.get('tp5'), tp_dict.get('tp6'),
-        tp_dict.get('tp7'), tp_dict.get('tp8'), tp_dict.get('tp9'),
-        tp_dict.get('tp10'), tp_dict.get('asts'), tp_dict.get('asas'),
-        nr, capaian
-    ))
-    conn.commit()
-    conn.close()
+    data = {
+        "siswa_id": siswa_id, "guru_id": guru_id, "kelas": kelas,
+        "semester": semester, "tahun_ajar": tahun_ajar, "mapel": mapel,
+        "tp1": tp_dict.get("tp1"), "tp2": tp_dict.get("tp2"),
+        "tp3": tp_dict.get("tp3"), "tp4": tp_dict.get("tp4"),
+        "tp5": tp_dict.get("tp5"), "tp6": tp_dict.get("tp6"),
+        "tp7": tp_dict.get("tp7"), "tp8": tp_dict.get("tp8"),
+        "tp9": tp_dict.get("tp9"), "tp10": tp_dict.get("tp10"),
+        "asts": tp_dict.get("asts"), "asas": tp_dict.get("asas"),
+        "nr": nr, "capaian_maksimal": capaian
+    }
+    # Try Supabase first
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("nilai_tp").upsert(data, on_conflict="siswa_id,semester,tahun_ajar,mapel").execute()
+            return nr
+        except Exception as e:
+            print(f"Supabase upsert_nilai_tp error: {e}")
+    # Fallback SQLite
+    try:
+        conn = get_conn()
+        conn.execute(f"""
+            INSERT INTO nilai_tp
+                (siswa_id,guru_id,kelas,semester,tahun_ajar,mapel,
+                 tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,asts,asas,nr,capaian_maksimal)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(siswa_id,semester,tahun_ajar,mapel)
+            DO UPDATE SET
+                guru_id=excluded.guru_id, kelas=excluded.kelas,
+                tp1=excluded.tp1, tp2=excluded.tp2, tp3=excluded.tp3,
+                tp4=excluded.tp4, tp5=excluded.tp5, tp6=excluded.tp6,
+                tp7=excluded.tp7, tp8=excluded.tp8, tp9=excluded.tp9,
+                tp10=excluded.tp10, asts=excluded.asts, asas=excluded.asas,
+                nr=excluded.nr, capaian_maksimal=excluded.capaian_maksimal
+        """, (
+            siswa_id, guru_id, kelas, semester, tahun_ajar, mapel,
+            data["tp1"], data["tp2"], data["tp3"], data["tp4"], data["tp5"],
+            data["tp6"], data["tp7"], data["tp8"], data["tp9"], data["tp10"],
+            data["asts"], data["asas"], nr, capaian
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"SQLite upsert_nilai_tp error: {e}")
     return nr
+
 
 def get_nilai_tp_kelas(kelas, semester, tahun_ajar, mapel):
     """Return semua nilai TP siswa di kelas untuk mapel tertentu."""
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT s.id as siswa_id, s.nama as siswa,
-               n.tp1,n.tp2,n.tp3,n.tp4,n.tp5,
-               n.tp6,n.tp7,n.tp8,n.tp9,n.tp10,
-               n.asts, n.asas, n.nr, n.capaian_maksimal
-        FROM siswa s
-        LEFT JOIN nilai_tp n ON n.siswa_id=s.id
-            AND n.semester=? AND n.tahun_ajar=? AND n.mapel=?
-        WHERE s.kelas=? AND s.status='Aktif'
-        ORDER BY s.nama
-    """, conn, params=[semester, tahun_ajar, mapel, kelas])
-    conn.close()
-    return df
+    sb = get_sb()
+    if sb:
+        try:
+            # Get siswa
+            s_res = sb.table("siswa").select("id,nama").eq("kelas", kelas).eq("status","Aktif").execute()
+            siswa_list = s_res.data or []
+            if not siswa_list:
+                return pd.DataFrame()
+            sids = [s["id"] for s in siswa_list]
+            # Get nilai
+            n_res = sb.table("nilai_tp").select("*").in_("siswa_id", sids)                .eq("semester", semester).eq("tahun_ajar", tahun_ajar).eq("mapel", mapel).execute()
+            nilai_map = {n["siswa_id"]: n for n in (n_res.data or [])}
+            rows = []
+            for s in sorted(siswa_list, key=lambda x: x["nama"]):
+                n = nilai_map.get(s["id"], {})
+                rows.append({"siswa_id": s["id"], "siswa": s["nama"],
+                    "tp1":n.get("tp1"), "tp2":n.get("tp2"), "tp3":n.get("tp3"),
+                    "tp4":n.get("tp4"), "tp5":n.get("tp5"), "tp6":n.get("tp6"),
+                    "tp7":n.get("tp7"), "tp8":n.get("tp8"), "tp9":n.get("tp9"),
+                    "tp10":n.get("tp10"), "asts":n.get("asts"), "asas":n.get("asas"),
+                    "nr":n.get("nr"), "capaian_maksimal":n.get("capaian_maksimal","")})
+            return pd.DataFrame(rows)
+        except Exception as e:
+            print(f"Supabase get_nilai_tp_kelas error: {e}")
+    # Fallback SQLite
+    try:
+        conn = get_conn()
+        df = pd.read_sql("""
+            SELECT s.id as siswa_id, s.nama as siswa,
+                   n.tp1,n.tp2,n.tp3,n.tp4,n.tp5,
+                   n.tp6,n.tp7,n.tp8,n.tp9,n.tp10,
+                   n.asts, n.asas, n.nr, n.capaian_maksimal
+            FROM siswa s
+            LEFT JOIN nilai_tp n ON n.siswa_id=s.id
+                AND n.semester=? AND n.tahun_ajar=? AND n.mapel=?
+            WHERE s.kelas=? AND s.status='Aktif'
+            ORDER BY s.nama
+        """, conn, params=[semester, tahun_ajar, mapel, kelas])
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 def get_nilai_tp_siswa(siswa_id, semester, tahun_ajar, mapel):
     """Return satu baris nilai TP untuk siswa + mapel tertentu."""
-    conn = get_conn()
-    row = conn.execute("""
-        SELECT tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,asts,asas,nr,capaian_maksimal
-        FROM nilai_tp
-        WHERE siswa_id=? AND semester=? AND tahun_ajar=? AND mapel=?
-    """, (siswa_id, semester, tahun_ajar, mapel)).fetchone()
-    conn.close()
-    return dict(row) if row else {}
+    # Try Supabase first
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("nilai_tp").select("*").eq("siswa_id", siswa_id)                .eq("semester", semester).eq("tahun_ajar", tahun_ajar)                .eq("mapel", mapel).limit(1).execute()
+            return res.data[0] if res.data else {}
+        except Exception:
+            pass
+    # Fallback SQLite
+    try:
+        conn = get_conn()
+        row = conn.execute("""
+            SELECT tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,asts,asas,nr,capaian_maksimal
+            FROM nilai_tp
+            WHERE siswa_id=? AND semester=? AND tahun_ajar=? AND mapel=?
+        """, (siswa_id, semester, tahun_ajar, mapel)).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
 
 def get_nr_semua_mapel_siswa(siswa_id, semester, tahun_ajar):
     """Return NR per mapel untuk satu siswa — untuk rapor."""
