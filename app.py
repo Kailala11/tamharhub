@@ -33,6 +33,7 @@ from database import (
     init_guru_kelas_table, get_kelas_guru, tambah_guru_kelas, hapus_guru_kelas,
     init_nilai_tp_table, upsert_nilai_tp, get_nilai_tp_kelas,
     get_nilai_tp_siswa, get_nr_semua_mapel_siswa, get_rekap_nr_kelas, hitung_nr, TP_COLS,
+    init_topik_tp_table, upsert_topik_tp, get_topik_tp,
     get_conn,
     upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
     init_file_metadata_table, simpan_metadata_file, get_files_guru, get_all_files_by_kategori, hapus_metadata_file,
@@ -630,6 +631,21 @@ elif role == "guru":
             with sub_input:
                 st.markdown(f"**Input nilai — {mp_n} · {kelas_nilai} · Semester {sem_n} · {thn_n}**")
                 st.caption("NR = TP(50%) + ASTS(25%) + ASAS(25%). Kosongkan TP yang belum ada pertemuan.")
+
+                with st.expander("Input Nama Topik per TP (untuk Capaian Kompetensi otomatis)", expanded=False):
+                    st.caption("Isi nama topik per TP agar capaian kompetensi di rapor lebih spesifik.")
+                    topik_now = get_topik_tp(guru_id, kelas_nilai, sem_n, thn_n, mp_n)
+                    t_cols = st.columns(5)
+                    t_inputs = {}
+                    for ti in range(1, 11):
+                        with t_cols[(ti-1) % 5]:
+                            t_inputs[ti] = st.text_input(f"TP{ti}:", value=topik_now.get(ti,""), key=f"tpk_{ti}_{mp_n}", placeholder=f"Topik TP{ti}")
+                    if st.button("Simpan Topik", use_container_width=True, key="btn_simpan_topik"):
+                        for ti, nama in t_inputs.items():
+                            if nama.strip():
+                                upsert_topik_tp(guru_id, kelas_nilai, sem_n, thn_n, mp_n, ti, nama.strip())
+                        st.success("Nama topik disimpan.")
+                        st.rerun()
 
                 # Header
                 cols_hdr = st.columns([2.2,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.9,0.9,0.8])
