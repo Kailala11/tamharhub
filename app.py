@@ -631,22 +631,6 @@ elif role == "guru":
                 st.markdown(f"**Input nilai — {mp_n} · {kelas_nilai} · Semester {sem_n} · {thn_n}**")
                 st.caption("NR = TP(50%) + ASTS(25%) + ASAS(25%). Kosongkan TP yang belum ada pertemuan.")
 
-                # Input nama topik per TP
-                with st.expander("Input Nama Topik per TP (untuk Capaian Kompetensi otomatis)", expanded=False):
-                    st.caption("Isi nama topik per TP agar capaian kompetensi di rapor lebih spesifik.")
-                    topik_now = get_topik_tp(guru_id, kelas_nilai, sem_n, thn_n, mp_n)
-                    t_cols = st.columns(5)
-                    t_inputs = {}
-                    for ti in range(1, 11):
-                        with t_cols[(ti-1) % 5]:
-                            t_inputs[ti] = st.text_input(f"TP{ti}:", value=topik_now.get(ti,""), key=f"tpk_{ti}_{mp_n}", placeholder=f"Topik TP{ti}")
-                    if st.button("Simpan Topik", use_container_width=True, key="btn_simpan_topik"):
-                        for ti, nama in t_inputs.items():
-                            if nama.strip():
-                                upsert_topik_tp(guru_id, kelas_nilai, sem_n, thn_n, mp_n, ti, nama.strip())
-                        st.success("Nama topik disimpan.")
-                        st.rerun()
-
                 # Header
                 cols_hdr = st.columns([2.2,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.7,0.9,0.9,0.8])
                 for col, lbl in zip(cols_hdr,["Nama Siswa","TP1","TP2","TP3","TP4","TP5","TP6","TP7","TP8","TP9","TP10","ASTS","ASAS","NR"]):
