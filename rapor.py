@@ -35,17 +35,68 @@ NUPTK_KEPSEK   = "1642757659200010"
 CAPAIAN_TEMPLATE = {
     "A": "Sangat baik dalam memahami, menguasai, dan menerapkan konsep {mapel}. Mampu menganalisis dan menyajikan hasil belajar dengan sangat baik.",
     "B": "Baik dalam memahami dan menguasai konsep {mapel}. Mampu menerapkan pengetahuan dalam situasi yang relevan dengan baik.",
-    "C": "Cukup baik dalam memahami konsep dasar {mapel}. Perlu peningkatan dalam penerapan dan pengembangan konsep lebih lanjut.",
-    "D": "Mulai berkembang dalam memahami konsep {mapel}. Memerlukan bimbingan lebih lanjut untuk meningkatkan pemahaman dan keterampilan.",
+    "C": "Cukup dalam memahami konsep {mapel}. Perlu peningkatan dalam penerapan dan pengembangan konsep lebih lanjut.",
+    "D": "Perlu bimbingan dalam memahami konsep {mapel}. Memerlukan pendampingan lebih lanjut untuk meningkatkan pemahaman dan keterampilan.",
 }
+
+def get_capaian_dari_topik(topik_dict: dict, nilai_dict: dict, mapel: str) -> str:
+    """
+    Generate capaian kompetensi dari topik per TP.
+    topik_dict: {1: "Cuaca di Sekitarku", 2: "Nama-nama Hari", ...}
+    nilai_dict: {tp1: 80, tp2: 76, tp3: 60, ...}
+    """
+    baik = []
+    perlu = []
+    
+    for i in range(1, 11):
+        topik = topik_dict.get(i, "").strip()
+        if not topik:
+            continue
+        val = nilai_dict.get(f"tp{i}")
+        try:
+            val = float(val) if val is not None and str(val).strip() not in ('','None','nan') else None
+        except:
+            val = None
+        if val is None:
+            continue
+        if val >= 76:
+            baik.append(topik)
+        else:
+            perlu.append(topik)
+    
+    hasil = ""
+    if baik:
+        if len(baik) == 1:
+            hasil += f"Baik dalam {baik[0]}. "
+        else:
+            gabung = ", ".join(baik[:-1]) + f" dan {baik[-1]}"
+            hasil += f"Baik dalam {gabung}. "
+    if perlu:
+        if len(perlu) == 1:
+            hasil += f"Perlu bimbingan dalam {perlu[0]}."
+        else:
+            gabung = ", ".join(perlu[:-1]) + f" dan {perlu[-1]}"
+            hasil += f"Perlu bimbingan dalam {gabung}."
+    
+    if not hasil:
+        # Fallback ke template biasa berdasarkan NR
+        from statistics import mean
+        vals = [float(v) for k,v in nilai_dict.items() if k.startswith('tp') and v is not None and str(v).strip() not in ('','None','nan')]
+        nr = mean(vals) if vals else 0
+        pred = get_predikat(nr)
+        return CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"]).format(mapel=mapel)
+    
+    return hasil.strip()
 
 def get_predikat(nilai):
     if nilai is None or (isinstance(nilai, float) and pd.isna(nilai)):
         return "-"
-    if nilai >= 90: return "A"
-    if nilai >= 80: return "B"
-    if nilai >= 70: return "C"
+    if nilai >= 91: return "A"
+    if nilai >= 76: return "B"
+    if nilai >= 61: return "C"
     return "D"
+
+PREDIKAT_LABEL = {"A":"Sangat Baik","B":"Baik","C":"Cukup","D":"Perlu Bimbingan"}
 
 def get_capaian_otomatis(mapel, nilai_p, nilai_k):
     avg = None

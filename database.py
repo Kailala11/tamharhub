@@ -868,13 +868,34 @@ def get_predikat(nilai):
 
 # ── NILAI TP ──────────────────────────────────────────────────────
 def hitung_nr(tp_dict):
-    vals = []
-    for c in TP_COLS:
+    """NR = rata-rata TP (50%) + ASTS (25%) + ASAS (25%)."""
+    tp_vals = []
+    for c in ['tp1','tp2','tp3','tp4','tp5','tp6','tp7','tp8','tp9','tp10']:
         v = tp_dict.get(c)
         if v is not None and str(v).strip() not in ('','None','nan'):
-            try: vals.append(float(v))
+            try: tp_vals.append(float(v))
             except: pass
-    return round(sum(vals)/len(vals), 2) if vals else 0.0
+    rata_tp = sum(tp_vals)/len(tp_vals) if tp_vals else None
+
+    def safe_float(val):
+        try:
+            return float(val) if val is not None and str(val).strip() not in ('','None','nan') else None
+        except: return None
+
+    asts = safe_float(tp_dict.get('asts'))
+    asas = safe_float(tp_dict.get('asas'))
+
+    if rata_tp is not None and asts is not None and asas is not None:
+        return round((rata_tp * 0.5) + (asts * 0.25) + (asas * 0.25), 2)
+    elif rata_tp is not None and asts is not None:
+        return round((rata_tp * 0.667) + (asts * 0.333), 2)
+    elif rata_tp is not None and asas is not None:
+        return round((rata_tp * 0.667) + (asas * 0.333), 2)
+    elif rata_tp is not None:
+        return round(rata_tp, 2)
+    elif asts is not None and asas is not None:
+        return round((asts + asas) / 2, 2)
+    return 0.0
 
 def upsert_nilai_tp(siswa_id, guru_id, kelas, semester, tahun_ajar, mapel, tp_dict, capaian=""):
     nr   = hitung_nr(tp_dict)
@@ -1176,3 +1197,56 @@ def delete_file_storage(bucket, path):
         sb.storage.from_(bucket).remove([path])
         return True
     except: return False
+
+
+# ── TOPIK TP ──────────────────────────────────────────────────────
+
+def init_topik_tp_table():
+    conn = get_conn()
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS topik_tp (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guru_id INTEGER, kelas TEXT NOT NULL,
+            semester TEXT NOT NULL, tahun_ajar TEXT NOT NULL,
+            mapel TEXT NOT NULL, tp_nomor INTEGER NOT NULL,
+            nama_topik TEXT DEFAULT '',
+            UNIQUE(guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor))""")
+        conn.commit()
+    except Exception: pass
+    conn.close()
+
+def upsert_topik_tp(guru_id, kelas, semester, tahun_ajar, mapel, tp_nomor, nama_topik):
+    data = {"guru_id":guru_id,"kelas":kelas,"semester":semester,
+            "tahun_ajar":tahun_ajar,"mapel":mapel,"tp_nomor":tp_nomor,"nama_topik":nama_topik}
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("topik_tp").upsert(data, on_conflict="guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor").execute()
+            return
+        except Exception as e: print(f"upsert_topik_tp: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("""INSERT INTO topik_tp (guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor,nama_topik)
+            VALUES (?,?,?,?,?,?,?) ON CONFLICT(guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor)
+            DO UPDATE SET nama_topik=excluded.nama_topik""",
+            (guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor,nama_topik))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def get_topik_tp(guru_id, kelas, semester, tahun_ajar, mapel):
+    """Return dict {tp_nomor: nama_topik}."""
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("topik_tp").select("tp_nomor,nama_topik")                .eq("guru_id",guru_id).eq("kelas",kelas).eq("semester",semester)                .eq("tahun_ajar",tahun_ajar).eq("mapel",mapel).execute()
+            return {r["tp_nomor"]: r["nama_topik"] for r in (res.data or [])}
+        except Exception: pass
+    try:
+        conn = get_conn()
+        rows = conn.execute("""SELECT tp_nomor, nama_topik FROM topik_tp
+            WHERE guru_id=? AND kelas=? AND semester=? AND tahun_ajar=? AND mapel=?""",
+            (guru_id,kelas,semester,tahun_ajar,mapel)).fetchall()
+        conn.close()
+        return {r["tp_nomor"]: r["nama_topik"] for r in rows}
+    except Exception:
+        return {}
