@@ -38,11 +38,6 @@ from database import (
     get_conn,
     upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
     init_file_metadata_table, simpan_metadata_file, get_files_guru, get_all_files_by_kategori, hapus_metadata_file,
-    init_staff_tables, seed_staff, get_all_staff, get_staff_by_nama,
-    upsert_absen_staff, get_absen_staff_hari, get_absen_staff_rekap,
-    get_checklist_ob, init_checklist_hari, update_checklist_item, tambah_checklist_item,
-    get_agenda_staff, tambah_agenda_staff, update_agenda_staff,
-    get_checklist_summary_hari,
 )
 
 # ── Init ───────────────────────────────────────────────────────────
@@ -89,7 +84,7 @@ if not st.session_state.logged_in:
           <p style="font-size:14px;color:#9aa0b8;margin-top:6px">SD Taman Harapan 1 Bekasi</p>
         </div>""", unsafe_allow_html=True)
 
-        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Staff", "Wali Murid"], key="_ukey1")
+        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Wali Murid"], key="_ukey1")
 
         guru_nama = None
         if role == "Guru":
@@ -1090,8 +1085,8 @@ elif role == "staff":
         for i in range(7):
             tgl_r = tgl_hari - timedelta(days=i)
             r = get_absen_staff_hari(staff_id, tgl_r)
-            st = r["status"] if r else "—"
-            riwayat_rows.append({"Tanggal": tgl_r.strftime("%d %b %Y"), "Status": STATUS_LABEL.get(st, st)})
+            st_val = r["status"] if r else "—"
+            riwayat_rows.append({"Tanggal": tgl_r.strftime("%d %b %Y"), "Status": STATUS_LABEL.get(st_val, st_val)})
         st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True, hide_index=True)
 
     # ── TAB CHECKLIST OB ─────────────────────────────────────────
