@@ -38,11 +38,6 @@ from database import (
     get_conn,
     upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
     init_file_metadata_table, simpan_metadata_file, get_files_guru, get_all_files_by_kategori, hapus_metadata_file,
-    init_staff_tables, seed_staff, get_all_staff, get_staff_by_nama,
-    upsert_absen_staff, get_absen_staff_hari, get_absen_staff_rekap,
-    get_checklist_ob, init_checklist_hari, update_checklist_item, tambah_checklist_item,
-    get_agenda_staff, tambah_agenda_staff, update_agenda_staff,
-    get_checklist_summary_hari,
 )
 
 # ── Init ───────────────────────────────────────────────────────────
@@ -89,7 +84,7 @@ if not st.session_state.logged_in:
           <p style="font-size:14px;color:#9aa0b8;margin-top:6px">SD Taman Harapan 1 Bekasi</p>
         </div>""", unsafe_allow_html=True)
 
-        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Staff", "Wali Murid"], key="_ukey1")
+        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Wali Murid"], key="_ukey1")
 
         guru_nama = None
         if role == "Guru":
@@ -102,24 +97,6 @@ if not st.session_state.logged_in:
             if not df_staff.empty:
                 staff_opts = df_staff["nama"].tolist()
                 staff_nama = st.selectbox("Pilih nama Anda:", staff_opts, key="staff_nama_sel")
-        pw = st.text_input("Password:", type="password", placeholder="Masukkan password Anda", key="pw_input") if role != "Wali Murid" else ""
-
-        if st.button("Masuk", type="primary", use_container_width=True, key="btn_masuk"):
-
-        if role == "Staff":
-            pw_staff = "staff2025"
-            try:
-                pw_staff = st.secrets.get("passwords", {}).get("staff", "staff2025")
-            except Exception: pass
-            if pw == pw_staff:
-                if staff_nama:
-                    st.session_state.update(logged_in=True, role="staff",
-                        user=staff_nama, guru_nama=staff_nama, guru_id=None)
-                    st.rerun()
-                else:
-                    st.error("Pilih nama Anda terlebih dahulu.")
-            else:
-                st.error("Password salah.")
 
         if role == "Wali Murid":
             st.markdown('<div class="alrt blue">Wali Murid tidak perlu password. Langsung tekan Masuk.</div>', unsafe_allow_html=True)
