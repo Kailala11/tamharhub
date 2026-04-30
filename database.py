@@ -1250,3 +1250,320 @@ def get_topik_tp(guru_id, kelas, semester, tahun_ajar, mapel):
         return {r["tp_nomor"]: r["nama_topik"] for r in rows}
     except Exception:
         return {}
+
+
+# ── STAFF (TU, OB, SECURITY) ──────────────────────────────────────
+
+STAFF_LIST = [
+    {"nama": "Hadi Broto",          "jabatan": "TU"},
+    {"nama": "Rudi Kurniawan, ST",  "jabatan": "TU"},
+    {"nama": "Sri Suhartono",       "jabatan": "TU"},
+    {"nama": "Suwarto",             "jabatan": "OB"},
+    {"nama": "Hambali",             "jabatan": "OB"},
+    {"nama": "Suratman",            "jabatan": "OB"},
+    {"nama": "Nurhasanah",          "jabatan": "OB"},
+    {"nama": "Mustakim",            "jabatan": "Security"},
+]
+
+CHECKLIST_DEFAULT = [
+    "Menyapu kelas dan teras",
+    "Mengepel kelas dan teras",
+    "Membersihkan kamar mandi dan kloset",
+    "Membersihkan wastafel",
+    "Menyalakan lampu dan AC pagi/sebelum kegiatan belajar",
+    "Mematikan lampu dan AC setelah kegiatan belajar",
+    "Mencuci tempat/bak sampah",
+    "Membersihkan saluran air",
+    "Merapikan taman",
+]
+
+def init_staff_tables():
+    conn = get_conn()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nama TEXT NOT NULL UNIQUE,
+            jabatan TEXT NOT NULL,
+            status TEXT DEFAULT 'Aktif'
+        );
+        CREATE TABLE IF NOT EXISTS absen_staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_id INTEGER REFERENCES staff(id),
+            tanggal TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '?',
+            keterangan TEXT DEFAULT '',
+            UNIQUE(staff_id, tanggal)
+        );
+        CREATE TABLE IF NOT EXISTS checklist_ob (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_id INTEGER REFERENCES staff(id),
+            tanggal TEXT NOT NULL,
+            item TEXT NOT NULL,
+            selesai INTEGER DEFAULT 0,
+            urutan INTEGER DEFAULT 0,
+            UNIQUE(staff_id, tanggal, item)
+        );
+        CREATE TABLE IF NOT EXISTS agenda_staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_id INTEGER REFERENCES staff(id),
+            tanggal TEXT NOT NULL,
+            tugas TEXT NOT NULL,
+            selesai INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+def seed_staff():
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("staff").select("id").limit(1).execute()
+            if not res.data:
+                for s in STAFF_LIST:
+                    sb.table("staff").insert(s).execute()
+            return
+        except Exception: pass
+    try:
+        conn = get_conn()
+        count = conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0]
+        if count == 0:
+            for s in STAFF_LIST:
+                conn.execute("INSERT OR IGNORE INTO staff (nama, jabatan) VALUES (?,?)", (s["nama"], s["jabatan"]))
+            conn.commit()
+        conn.close()
+    except Exception: pass
+
+def get_all_staff():
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("staff").select("*").eq("status","Aktif").order("jabatan").execute()
+            return pd.DataFrame(res.data or [])
+        except Exception: pass
+    try:
+        conn = get_conn()
+        df = pd.read_sql("SELECT * FROM staff WHERE status='Aktif' ORDER BY jabatan, nama", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_staff_by_nama(nama):
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("staff").select("*").eq("nama", nama).limit(1).execute()
+            return res.data[0] if res.data else None
+        except Exception: pass
+    try:
+        conn = get_conn()
+        row = conn.execute("SELECT * FROM staff WHERE nama=?", (nama,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+def upsert_absen_staff(staff_id, tanggal, status, keterangan=""):
+    data = {"staff_id":staff_id,"tanggal":str(tanggal),"status":status,"keterangan":keterangan}
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("absen_staff").upsert(data, on_conflict="staff_id,tanggal").execute()
+            return
+        except Exception as e: print(f"upsert_absen_staff: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("INSERT INTO absen_staff (staff_id,tanggal,status,keterangan) VALUES (?,?,?,?) ON CONFLICT(staff_id,tanggal) DO UPDATE SET status=excluded.status, keterangan=excluded.keterangan",
+            (staff_id, str(tanggal), status, keterangan))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def get_absen_staff_hari(staff_id, tanggal):
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("absen_staff").select("status,keterangan").eq("staff_id",staff_id).eq("tanggal",str(tanggal)).limit(1).execute()
+            return res.data[0] if res.data else None
+        except Exception: pass
+    try:
+        conn = get_conn()
+        row = conn.execute("SELECT status, keterangan FROM absen_staff WHERE staff_id=? AND tanggal=?", (staff_id, str(tanggal))).fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+def get_absen_staff_rekap(bulan, tahun):
+    bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
+    sb = get_sb()
+    if sb:
+        try:
+            s_res = sb.table("staff").select("id,nama,jabatan").eq("status","Aktif").execute()
+            staff_list = s_res.data or []
+            a_res = sb.table("absen_staff").select("staff_id,status").like("tanggal", f"{bulan_str}%").execute()
+            absen_map = {}
+            for a in (a_res.data or []):
+                sid = a["staff_id"]
+                if sid not in absen_map:
+                    absen_map[sid] = {"H":0,"A":0,"I":0,"S":0,"total":0}
+                if a["status"] in absen_map[sid]:
+                    absen_map[sid][a["status"]] += 1
+                absen_map[sid]["total"] += 1
+            rows = []
+            for s in staff_list:
+                m = absen_map.get(s["id"], {"H":0,"A":0,"I":0,"S":0,"total":0})
+                rows.append({"nama":s["nama"],"jabatan":s["jabatan"],"hadir":m["H"],"alpa":m["A"],"izin":m["I"],"sakit":m["S"],"total_hari":m["total"]})
+            return pd.DataFrame(rows)
+        except Exception: pass
+    try:
+        conn = get_conn()
+        df = pd.read_sql("""
+            SELECT s.nama, s.jabatan,
+                SUM(CASE WHEN a.status='H' THEN 1 ELSE 0 END) as hadir,
+                SUM(CASE WHEN a.status='A' THEN 1 ELSE 0 END) as alpa,
+                SUM(CASE WHEN a.status='I' THEN 1 ELSE 0 END) as izin,
+                SUM(CASE WHEN a.status='S' THEN 1 ELSE 0 END) as sakit,
+                COUNT(a.id) as total_hari
+            FROM staff s LEFT JOIN absen_staff a ON a.staff_id=s.id AND a.tanggal LIKE ?
+            WHERE s.status='Aktif' GROUP BY s.id ORDER BY s.jabatan, s.nama
+        """, conn, params=[f"{bulan_str}%"])
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_checklist_ob(staff_id, tanggal):
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("checklist_ob").select("*").eq("staff_id",staff_id).eq("tanggal",str(tanggal)).order("urutan").execute()
+            return res.data or []
+        except Exception: pass
+    try:
+        conn = get_conn()
+        rows = conn.execute("SELECT * FROM checklist_ob WHERE staff_id=? AND tanggal=? ORDER BY urutan", (staff_id, str(tanggal))).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+def init_checklist_hari(staff_id, tanggal):
+    """Inisialisasi checklist default untuk hari ini jika belum ada."""
+    existing = get_checklist_ob(staff_id, tanggal)
+    if existing:
+        return
+    sb = get_sb()
+    if sb:
+        try:
+            for i, item in enumerate(CHECKLIST_DEFAULT):
+                sb.table("checklist_ob").insert({"staff_id":staff_id,"tanggal":str(tanggal),"item":item,"selesai":0,"urutan":i}).execute()
+            return
+        except Exception: pass
+    try:
+        conn = get_conn()
+        for i, item in enumerate(CHECKLIST_DEFAULT):
+            conn.execute("INSERT OR IGNORE INTO checklist_ob (staff_id,tanggal,item,selesai,urutan) VALUES (?,?,?,0,?)",
+                (staff_id, str(tanggal), item, i))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def update_checklist_item(checklist_id, selesai):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("checklist_ob").update({"selesai": 1 if selesai else 0}).eq("id", checklist_id).execute()
+            return
+        except Exception: pass
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE checklist_ob SET selesai=? WHERE id=?", (1 if selesai else 0, checklist_id))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def tambah_checklist_item(staff_id, tanggal, item):
+    existing = get_checklist_ob(staff_id, tanggal)
+    urutan = len(existing)
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("checklist_ob").insert({"staff_id":staff_id,"tanggal":str(tanggal),"item":item,"selesai":0,"urutan":urutan}).execute()
+            return
+        except Exception: pass
+    try:
+        conn = get_conn()
+        conn.execute("INSERT OR IGNORE INTO checklist_ob (staff_id,tanggal,item,selesai,urutan) VALUES (?,?,?,0,?)",
+            (staff_id, str(tanggal), item, urutan))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def get_agenda_staff(staff_id, tanggal):
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("agenda_staff").select("*").eq("staff_id",staff_id).eq("tanggal",str(tanggal)).order("created_at").execute()
+            return res.data or []
+        except Exception: pass
+    try:
+        conn = get_conn()
+        rows = conn.execute("SELECT * FROM agenda_staff WHERE staff_id=? AND tanggal=? ORDER BY created_at", (staff_id, str(tanggal))).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+def tambah_agenda_staff(staff_id, tanggal, tugas):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("agenda_staff").insert({"staff_id":staff_id,"tanggal":str(tanggal),"tugas":tugas,"selesai":0}).execute()
+            return
+        except Exception: pass
+    try:
+        conn = get_conn()
+        conn.execute("INSERT INTO agenda_staff (staff_id,tanggal,tugas,selesai) VALUES (?,?,?,0)",
+            (staff_id, str(tanggal), tugas))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def update_agenda_staff(agenda_id, selesai):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("agenda_staff").update({"selesai": 1 if selesai else 0}).eq("id", agenda_id).execute()
+            return
+        except Exception: pass
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE agenda_staff SET selesai=? WHERE id=?", (1 if selesai else 0, agenda_id))
+        conn.commit(); conn.close()
+    except Exception: pass
+
+def get_checklist_summary_hari(tanggal):
+    """Summary checklist semua OB untuk kepsek."""
+    sb = get_sb()
+    if sb:
+        try:
+            s_res = sb.table("staff").select("id,nama,jabatan").eq("jabatan","OB").eq("status","Aktif").execute()
+            rows = []
+            for s in (s_res.data or []):
+                c_res = sb.table("checklist_ob").select("selesai").eq("staff_id",s["id"]).eq("tanggal",str(tanggal)).execute()
+                items = c_res.data or []
+                total = len(items)
+                done  = sum(1 for i in items if i["selesai"])
+                rows.append({"nama":s["nama"],"total":total,"selesai":done,"pct":f"{int(done/total*100)}%" if total else "0%"})
+            return rows
+        except Exception: pass
+    try:
+        conn = get_conn()
+        rows = conn.execute("""
+            SELECT s.nama, COUNT(c.id) as total, SUM(c.selesai) as selesai
+            FROM staff s LEFT JOIN checklist_ob c ON c.staff_id=s.id AND c.tanggal=?
+            WHERE s.jabatan='OB' AND s.status='Aktif' GROUP BY s.id
+        """, (str(tanggal),)).fetchall()
+        conn.close()
+        return [{"nama":r["nama"],"total":r["total"],"selesai":r["selesai"] or 0,
+                 "pct":f"{int((r['selesai'] or 0)/r['total']*100)}%" if r["total"] else "0%"} for r in rows]
+    except Exception:
+        return []
