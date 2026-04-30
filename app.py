@@ -102,6 +102,9 @@ if not st.session_state.logged_in:
             if not df_staff.empty:
                 staff_opts = df_staff["nama"].tolist()
                 staff_nama = st.selectbox("Pilih nama Anda:", staff_opts, key="staff_nama_sel")
+        pw = st.text_input("Password:", type="password", placeholder="Masukkan password Anda", key="pw_input") if role != "Wali Murid" else ""
+
+        if st.button("Masuk", type="primary", use_container_width=True, key="btn_masuk"):
 
         if role == "Staff":
             pw_staff = "staff2025"
