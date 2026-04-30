@@ -34,6 +34,11 @@ from database import (
     init_guru_kelas_table, get_kelas_guru, tambah_guru_kelas, hapus_guru_kelas,
     init_nilai_tp_table, upsert_nilai_tp, get_nilai_tp_kelas,
     get_nilai_tp_siswa, get_nr_semua_mapel_siswa, get_rekap_nr_kelas, hitung_nr, TP_COLS,
+    init_staff_tables, seed_staff, get_all_staff, get_staff_by_nama,
+    upsert_absen_staff, get_absen_staff_hari, get_absen_staff_rekap,
+    get_checklist_ob, init_checklist_hari, update_checklist_item, tambah_checklist_item,
+    get_agenda_staff, tambah_agenda_staff, update_agenda_staff,
+    get_checklist_summary_hari,
     init_topik_tp_table, upsert_topik_tp, get_topik_tp,
     get_conn,
     upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
@@ -84,7 +89,7 @@ if not st.session_state.logged_in:
           <p style="font-size:14px;color:#9aa0b8;margin-top:6px">SD Taman Harapan 1 Bekasi</p>
         </div>""", unsafe_allow_html=True)
 
-        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Wali Murid"], key="_ukey1")
+        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Staff", "Wali Murid"], key="_ukey1")
 
         guru_nama = None
         if role == "Guru":
