@@ -104,29 +104,44 @@ if not st.session_state.logged_in:
                 st.session_state.update(logged_in=True, role="walimurid", guru_nama="Wali Murid", guru_id=None)
                 st.rerun()
         else:
-            pw = st.text_input("Password:", type="password", placeholder="Masukkan password Anda")
-            if st.button("Masuk", type="primary", use_container_width=True):
-                role_key = "kepsek" if role == "Kepala Sekolah" else "guru"
-                try:
-                    pw_kepsek = st.secrets["passwords"]["kepsek"]
-                    pw_guru   = st.secrets["passwords"]["guru"]
-                except Exception:
-                    pw_kepsek = "kepsek123"   # fallback lokal
-                    pw_guru   = "guru2025"
-                ok = (role_key=="kepsek" and pw==pw_kepsek) or (role_key=="guru" and pw==pw_guru)
-                if ok:
-                    gid = None
-                    if role_key == "guru":
-                        g = get_guru_by_nama(guru_nama)
-                        gid = g["id"] if g else None
-                    st.session_state.update(
-                        logged_in=True, role=role_key,
-                        guru_nama=guru_nama if role_key=="guru" else "Rahmat Hidayat, S.Psi., M.M.",
-                        guru_id=gid
-                    )
-                    st.rerun()
+            pw = st.text_input("Password:", type="password", placeholder="Masukkan password Anda", key="pw_input")
+            if st.button("Masuk", type="primary", use_container_width=True, key="btn_masuk"):
+                if role == "Staff":
+                    try:
+                        pw_staff = st.secrets["passwords"]["staff"]
+                    except Exception:
+                        pw_staff = "staff2025"
+                    if pw == pw_staff:
+                        if staff_nama:
+                            st.session_state.update(logged_in=True, role="staff",
+                                user=staff_nama, guru_nama=staff_nama, guru_id=None)
+                            st.rerun()
+                        else:
+                            st.error("Pilih nama Anda terlebih dahulu.")
+                    else:
+                        st.error("Password salah.")
                 else:
-                    st.error("Password salah. Coba lagi.")
+                    role_key = "kepsek" if role == "Kepala Sekolah" else "guru"
+                    try:
+                        pw_kepsek = st.secrets["passwords"]["kepsek"]
+                        pw_guru   = st.secrets["passwords"]["guru"]
+                    except Exception:
+                        pw_kepsek = "kepsek123"
+                        pw_guru   = "guru2025"
+                    ok = (role_key=="kepsek" and pw==pw_kepsek) or (role_key=="guru" and pw==pw_guru)
+                    if ok:
+                        gid = None
+                        if role_key == "guru":
+                            g = get_guru_by_nama(guru_nama)
+                            gid = g["id"] if g else None
+                        st.session_state.update(
+                            logged_in=True, role=role_key,
+                            guru_nama=guru_nama if role_key=="guru" else "Rahmat Hidayat, S.Psi., M.M.",
+                            guru_id=gid
+                        )
+                        st.rerun()
+                    else:
+                        st.error("Password salah. Coba lagi.")
     st.stop()
 
 # ── Shared ────────────────────────────────────────────────────────
