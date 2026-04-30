@@ -84,7 +84,7 @@ if not st.session_state.logged_in:
           <p style="font-size:14px;color:#9aa0b8;margin-top:6px">SD Taman Harapan 1 Bekasi</p>
         </div>""", unsafe_allow_html=True)
 
-        role = st.selectbox("Saya adalah:", ["Kepala Sekolah", "Guru", "Wali Murid"], key="_ukey1")
+        role = st.selectbox("Saya adalah:","Kepala Sekolah", "Guru", "Staff", "Wali Murid", key="_ukey1")
 
         guru_nama = None
         if role == "Guru":
