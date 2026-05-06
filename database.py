@@ -1,1718 +1,1598 @@
 """
-database.py — TamharHub Database Layer
-Arsitektur: Supabase (PostgreSQL) sebagai primary, SQLite sebagai fallback lokal.
-Semua fungsi otomatis pakai Supabase kalau credentials tersedia.
+rapor.py — Generate Rapor Kurikulum Merdeka
+Format: SD Taman Harapan 1 Bekasi
+Satu halaman: info siswa → nilai + capaian kompetensi → ekskul → absensi → catatan → TTD
 """
-import sqlite3
-import pandas as pd
+from io import BytesIO
 from datetime import date
+import pandas as pd
 
-# ── CONFIG ────────────────────────────────────────────────────────
-DB_PATH      = "tamharhub.db"
-SUPABASE_URL = "https://fodvxtulmrzzwtvirpuc.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZvZHZ4dHVsbXJ6end0dmlycHVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyNTY4OTIsImV4cCI6MjA5MjgzMjg5Mn0.kGByHoXbJf2VJlROfa6i8VeI1t1BUVySjvp5zRo4AjQ"
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle,
+    Paragraph, Spacer, HRFlowable
+)
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
-DESKRIPSI_SIKAP = {"A": "Sangat Baik", "B": "Baik", "C": "Cukup", "D": "Perlu Bimbingan"}
-TP_COLS = ['tp1','tp2','tp3','tp4','tp5','tp6','tp7','tp8','tp9','tp10','asts','asas']
+# ── Warna ──────────────────────────────────────────────────────────
+WHITE  = colors.white
+BLACK  = colors.black
+GRAY   = colors.HexColor("#f5f5f5")
+LGRAY  = colors.HexColor("#e0e0e0")
+DBLUE  = colors.HexColor("#1a3a5c")
 
-# ── SUPABASE CLIENT ───────────────────────────────────────────────
-_sb_client = None
+# ── Konstanta Sekolah ──────────────────────────────────────────────
+NAMA_SEKOLAH   = "SD TAMAN HARAPAN"
+NPSN           = "2023650"
+ALAMAT_SEKOLAH = "Perum. Taman Harapan Baru, Kota Bekasi"
+NAMA_KEPSEK    = "RAHMAT HIDAYAT, S.Psi., M.M."
+NUPTK_KEPSEK   = "1642757659200010"
 
-def get_sb():
-    global _sb_client
-    if _sb_client is not None:
-        return _sb_client
-    try:
-        import streamlit as st
-        url = st.secrets.get("supabase", {}).get("url", SUPABASE_URL)
-        key = st.secrets.get("supabase", {}).get("key", SUPABASE_KEY)
-    except Exception:
-        url, key = SUPABASE_URL, SUPABASE_KEY
-    try:
-        from supabase import create_client
-        _sb_client = create_client(url, key)
-        return _sb_client
-    except Exception:
-        return None
-
-def sb_ok():
-    return get_sb() is not None
-
-# ── SQLITE FALLBACK ───────────────────────────────────────────────
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-# ── GENERIC HELPERS ───────────────────────────────────────────────
-def _sb_df(table, select="*", filters=None, order=None, limit=None):
-    try:
-        q = get_sb().table(table).select(select)
-        if filters:
-            for k, v in filters.items():
-                q = q.eq(k, v)
-        if order:
-            q = q.order(order)
-        if limit:
-            q = q.limit(limit)
-        res = q.execute()
-        return pd.DataFrame(res.data or [])
-    except Exception:
-        return None
-
-def _sb_upsert(table, data, conflict):
-    try:
-        get_sb().table(table).upsert(data, on_conflict=conflict).execute()
-        return True
-    except Exception as e:
-        print(f"SB upsert {table}: {e}")
-        return False
-
-def _sb_one(table, select="*", filters=None):
-    try:
-        q = get_sb().table(table).select(select)
-        if filters:
-            for k, v in filters.items():
-                q = q.eq(k, v)
-        res = q.limit(1).execute()
-        return res.data[0] if res.data else None
-    except Exception:
-        return None
-
-# ── DATA GURU ─────────────────────────────────────────────────────
-GURU_DATA = [
-    ("Annisa Rosmiati, S.Pd",       "I Abu Bakar Ash Shidiq"),
-    ("Asnah Garlay, S.Pd",          "I Abu Bakar Ash Shidiq"),
-    ("Rahmawati, S.Pd",             "I Umar bin Khatab"),
-    ("Ainun Fatiyah, S.Pd",         "I Umar bin Khatab"),
-    ("Euis Mulyati, S.Pd",          "I Utsman bin Affan"),
-    ("Syarkiyah, S.Pd",             "I Ali bin Abi Thalib"),
-    ("Winda Atmeiti, S.Pd",         "II Abu Bakar Ash Shidiq"),
-    ("Griyana Novita Sari, S.Pd",   "II Abu Bakar Ash Shidiq"),
-    ("Yollanda Mega Putri, S.Pd",   "II Umar bin Khatab"),
-    ("Widyastuti, S.Pd",            "II Umar bin Khatab"),
-    ("Alyuma Oklisia, S.Pd",        "II Utsman bin Affan"),
-    ("Siti Ferda Heriati, S.P",     "II Utsman bin Affan"),
-    ("Rosenah, S.Pd",               "II Ali bin Abi Thalib"),
-    ("Usfatun Juliana, S.Pd",       "III Abu Bakar Ash Shidiq"),
-    ("Aa Zamah, S.Pd",              "III Umar bin Khatab"),
-    ("Lenia Nadhroh, S.Pd",         "III Utsman bin Affan"),
-    ("Dra. Wagiati",                "III Ali bin Abi Thalib"),
-    ("Dra. Juniti",                 "III Abdurahman bin Auf"),
-    ("M. Haris, S.Pd",              "IV Abu Bakar Ash Shidiq"),
-    ("Ii Hilyati, S.Pd",            "IV Umar bin Khatab"),
-    ("Diah Handayani, S.Sos",       "IV Utsman bin Affan"),
-    ("Yuniati, S.Ag",               "IV Ali bin Abi Thalib"),
-    ("Rita Afiati, S.Pd",           "V Abu Bakar Ash Shidiq"),
-    ("Fathur, S.Pd",                "V Umar bin Khatab"),
-    ("Dian Asih Rahayu, S.Pd",      "V Utsman bin Affan"),
-    ("Hj. Wardah, S.Pd",            "VI Abu Bakar Ash Shidiq"),
-    ("Yuliana Banjar Susanti, S.Pd","VI Umar bin Khatab"),
-    ("Karsim Fahresyi, S.Pd",       "VI Utsman bin Affan"),
-    ("Lia Nuriasih, S.Pd",          "VI Ali bin Abi Thalib"),
-    ("Akim, S.Pd",                  "Semua Tingkat"),
-    ("Syirojudin, S.Pd",            "Semua Tingkat"),
-    ("Munawir, S.Pd",               "Semua Tingkat"),
-    ("H. Mukhlasin, S.Pd",          "Semua Tingkat"),
-    ("Ari Rivaldi, S.Pd",           "Semua Tingkat"),
-    ("Assadulloh, SE",              "Semua Tingkat"),
-    ("Ilhamul Karim, S.Pd",         "Semua Tingkat"),
-    ("Fuad Arif, S.Pd",             "Semua Tingkat"),
-    ("Ayu Suraya, S.Pd",            "Semua Tingkat"),
-]
-
-MAPEL_DEFAULT = {
-    "Akim, S.Pd":          ["PJOK"],
-    "Syirojudin, S.Pd":    ["PJOK"],
-    "Munawir, S.Pd":       ["PADB"],
-    "H. Mukhlasin, S.Pd":  ["PADB"],
-    "Ari Rivaldi, S.Pd":   ["TIK"],
-    "Assadulloh, SE":      ["TIK"],
-    "Ilhamul Karim, S.Pd": ["B. Arab"],
-    "Fuad Arif, S.Pd":     ["B. Inggris"],
-    "Ayu Suraya, S.Pd":    ["Tahfidh"],
+# ── Capaian Kompetensi Otomatis ────────────────────────────────────
+CAPAIAN_TEMPLATE = {
+    "A": "Sangat baik dalam memahami, menguasai, dan menerapkan konsep {mapel}. Mampu menganalisis dan menyajikan hasil belajar dengan sangat baik.",
+    "B": "Baik dalam memahami dan menguasai konsep {mapel}. Mampu menerapkan pengetahuan dalam situasi yang relevan dengan baik.",
+    "C": "Cukup dalam memahami konsep {mapel}. Perlu peningkatan dalam penerapan dan pengembangan konsep lebih lanjut.",
+    "D": "Perlu bimbingan dalam memahami konsep {mapel}. Memerlukan pendampingan lebih lanjut untuk meningkatkan pemahaman dan keterampilan.",
 }
 
-# ── INIT ─────────────────────────────────────────────────────────
-def init_db():
-    conn = get_conn()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS guru (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nama TEXT NOT NULL UNIQUE, kelas TEXT,
-            status TEXT DEFAULT 'Aktif', nuptk TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS mapel_guru (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER REFERENCES guru(id), mapel TEXT NOT NULL,
-            UNIQUE(guru_id, mapel)
-        );
-        CREATE TABLE IF NOT EXISTS siswa (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nama TEXT NOT NULL, kelas TEXT NOT NULL,
-            status TEXT DEFAULT 'Aktif',
-            nis TEXT DEFAULT '', nisn TEXT DEFAULT '',
-            alamat TEXT DEFAULT '', fase TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS absen_guru (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER REFERENCES guru(id),
-            tanggal TEXT NOT NULL, status TEXT NOT NULL,
-            keterangan TEXT DEFAULT '',
-            UNIQUE(guru_id, tanggal)
-        );
-        CREATE TABLE IF NOT EXISTS absen_siswa (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            siswa_id INTEGER, guru_id INTEGER,
-            tanggal TEXT NOT NULL, status TEXT NOT NULL,
-            keterangan TEXT DEFAULT '',
-            UNIQUE(siswa_id, tanggal)
-        );
-        CREATE TABLE IF NOT EXISTS jurnal (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER, tanggal TEXT NOT NULL,
-            kelas TEXT NOT NULL, mapel TEXT NOT NULL,
-            topik TEXT NOT NULL, aktivitas TEXT NOT NULL,
-            media TEXT DEFAULT '', catatan TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS nilai_siswa (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            siswa_id INTEGER, guru_id INTEGER,
-            semester TEXT, tahun_ajar TEXT, mapel TEXT,
-            pengetahuan REAL, keterampilan REAL,
-            sikap TEXT DEFAULT 'B', capaian TEXT DEFAULT '',
-            UNIQUE(siswa_id, semester, tahun_ajar, mapel)
-        );
-        CREATE TABLE IF NOT EXISTS nilai_tp (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            siswa_id INTEGER, guru_id INTEGER, kelas TEXT,
-            semester TEXT, tahun_ajar TEXT, mapel TEXT,
-            tp1 REAL, tp2 REAL, tp3 REAL, tp4 REAL, tp5 REAL,
-            tp6 REAL, tp7 REAL, tp8 REAL, tp9 REAL, tp10 REAL,
-            asts REAL, asas REAL, nr REAL,
-            capaian_maksimal TEXT DEFAULT '',
-            updated_at TEXT DEFAULT (datetime('now','localtime')),
-            UNIQUE(siswa_id, semester, tahun_ajar, mapel)
-        );
-        CREATE TABLE IF NOT EXISTS ekskul_siswa (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            siswa_id INTEGER, guru_id INTEGER,
-            semester TEXT, tahun_ajar TEXT,
-            nama_ekskul TEXT, keterangan TEXT DEFAULT '',
-            UNIQUE(siswa_id, semester, tahun_ajar, nama_ekskul)
-        );
-        CREATE TABLE IF NOT EXISTS catatan_rapor (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            siswa_id INTEGER, guru_id INTEGER,
-            semester TEXT, tahun_ajar TEXT,
-            catatan_wali TEXT DEFAULT '', tanggapan_ortu TEXT DEFAULT '',
-            UNIQUE(siswa_id, semester, tahun_ajar)
-        );
-        CREATE TABLE IF NOT EXISTS agenda_sekolah (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            judul TEXT NOT NULL, deskripsi TEXT DEFAULT '',
-            tanggal TEXT NOT NULL, tanggal_end TEXT DEFAULT '',
-            kategori TEXT DEFAULT 'Umum', dibuat_oleh TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now','localtime'))
-        );
-        CREATE TABLE IF NOT EXISTS guru_kelas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER REFERENCES guru(id) ON DELETE CASCADE,
-            kelas TEXT NOT NULL, UNIQUE(guru_id, kelas)
-        );
-        CREATE TABLE IF NOT EXISTS file_metadata (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER, bucket TEXT NOT NULL,
-            path TEXT NOT NULL, nama_file TEXT NOT NULL,
-            kategori TEXT NOT NULL, ukuran INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now','localtime')),
-            UNIQUE(bucket, path)
-        );
-    """)
-    for nama, kelas in GURU_DATA:
+def get_capaian_dari_topik(topik_dict: dict, nilai_dict: dict, mapel: str) -> str:
+    """
+    Generate capaian kompetensi dari topik per TP.
+    topik_dict: {1: "Cuaca di Sekitarku", 2: "Nama-nama Hari", ...}
+    nilai_dict: {tp1: 80, tp2: 76, tp3: 60, ...}
+    """
+    baik = []
+    perlu = []
+    
+    for i in range(1, 11):
+        topik = topik_dict.get(i, "").strip()
+        if not topik:
+            continue
+        val = nilai_dict.get(f"tp{i}")
         try:
-            conn.execute("INSERT OR IGNORE INTO guru (nama,kelas) VALUES (?,?)", (nama, kelas))
-        except: pass
-    conn.commit()
-    for nama, mapels in MAPEL_DEFAULT.items():
-        row = conn.execute("SELECT id FROM guru WHERE nama=?", (nama,)).fetchone()
-        if row:
-            for mp in mapels:
-                try:
-                    conn.execute("INSERT OR IGNORE INTO mapel_guru (guru_id,mapel) VALUES (?,?)", (row['id'], mp))
-                except: pass
-    rows = conn.execute("SELECT id,kelas FROM guru WHERE kelas IS NOT NULL AND kelas!=''").fetchall()
-    for r in rows:
-        try:
-            conn.execute("INSERT OR IGNORE INTO guru_kelas (guru_id,kelas) VALUES (?,?)", (r['id'], r['kelas']))
-        except: pass
-    conn.commit()
-    conn.close()
-
-def init_agenda_table(): pass
-def init_nilai_table(): pass
-def init_nilai_tp_table(): pass
-def init_guru_kelas_table(): pass
-def init_file_metadata_table(): pass
-
-def run_migrations():
-    conn = get_conn()
-    for sql in [
-        "ALTER TABLE guru ADD COLUMN nuptk TEXT DEFAULT ''",
-        "ALTER TABLE siswa ADD COLUMN nis TEXT DEFAULT ''",
-        "ALTER TABLE siswa ADD COLUMN nisn TEXT DEFAULT ''",
-        "ALTER TABLE siswa ADD COLUMN alamat TEXT DEFAULT ''",
-        "ALTER TABLE siswa ADD COLUMN fase TEXT DEFAULT ''",
-        "ALTER TABLE nilai_siswa ADD COLUMN capaian TEXT DEFAULT ''",
-    ]:
-        try: conn.execute(sql)
-        except: pass
-    conn.commit()
-    conn.close()
-
-# ── GURU ──────────────────────────────────────────────────────────
-def get_all_guru():
-    if sb_ok():
-        df = _sb_df("guru","id,nama,kelas,status,nuptk",{"status":"Aktif"},"nama")
-        if df is not None: return df
-    conn = get_conn()
-    df = pd.read_sql("SELECT id,nama,kelas,status,nuptk FROM guru WHERE status='Aktif' ORDER BY nama", conn)
-    conn.close()
-    return df
-
-def get_guru_by_nama(nama):
-    if sb_ok():
-        r = _sb_one("guru","*",{"nama":nama})
-        if r is not None: return r
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM guru WHERE nama=?", (nama,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-def get_mapel_guru(guru_id):
-    if sb_ok():
-        df = _sb_df("mapel_guru","mapel",{"guru_id":guru_id})
-        if df is not None: return df["mapel"].tolist() if not df.empty else []
-    conn = get_conn()
-    rows = conn.execute("SELECT mapel FROM mapel_guru WHERE guru_id=? ORDER BY mapel", (guru_id,)).fetchall()
-    conn.close()
-    return [r["mapel"] for r in rows]
-
-def add_mapel_guru(guru_id, mapel):
-    if sb_ok():
-        try:
-            get_sb().table("mapel_guru").insert({"guru_id":guru_id,"mapel":mapel}).execute()
-            return True, "OK"
-        except Exception as e:
-            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                return False, "Sudah ada"
-    try:
-        conn = get_conn()
-        conn.execute("INSERT OR IGNORE INTO mapel_guru (guru_id,mapel) VALUES (?,?)", (guru_id, mapel))
-        conn.commit(); conn.close()
-        return True, "OK"
-    except Exception as e:
-        return False, str(e)
-
-def delete_mapel_guru(guru_id, mapel):
-    if sb_ok():
-        try:
-            get_sb().table("mapel_guru").delete().eq("guru_id",guru_id).eq("mapel",mapel).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("DELETE FROM mapel_guru WHERE guru_id=? AND mapel=?", (guru_id, mapel))
-    conn.commit(); conn.close()
-
-def update_nuptk(guru_id, nuptk):
-    if sb_ok():
-        try:
-            get_sb().table("guru").update({"nuptk":nuptk}).eq("id",guru_id).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("UPDATE guru SET nuptk=? WHERE id=?", (nuptk, guru_id))
-    conn.commit(); conn.close()
-
-def get_nuptk(guru_id):
-    if sb_ok():
-        r = _sb_one("guru","nuptk",{"id":guru_id})
-        if r is not None: return r.get("nuptk","")
-    try:
-        conn = get_conn()
-        row = conn.execute("SELECT nuptk FROM guru WHERE id=?", (guru_id,)).fetchone()
-        conn.close()
-        return row["nuptk"] if row and row["nuptk"] else ""
-    except: return ""
-
-def get_kelas_guru(guru_id):
-    if sb_ok():
-        df = _sb_df("guru_kelas","kelas",{"guru_id":guru_id})
-        if df is not None and not df.empty: return df["kelas"].tolist()
-        if df is not None:
-            r = _sb_one("guru","kelas",{"id":guru_id})
-            return [r["kelas"]] if r and r.get("kelas") else []
-    try:
-        conn = get_conn()
-        rows = conn.execute("""
-            SELECT DISTINCT COALESCE(gk.kelas, g.kelas) as kelas
-            FROM guru g LEFT JOIN guru_kelas gk ON gk.guru_id=g.id
-            WHERE g.id=? ORDER BY kelas
-        """, (guru_id,)).fetchall()
-        conn.close()
-        return [r["kelas"] for r in rows if r["kelas"]]
-    except: return []
-
-def tambah_guru_kelas(guru_id, kelas):
-    if sb_ok():
-        try:
-            get_sb().table("guru_kelas").insert({"guru_id":guru_id,"kelas":kelas}).execute()
-            return True
-        except: return False
-    try:
-        conn = get_conn()
-        conn.execute("INSERT OR IGNORE INTO guru_kelas (guru_id,kelas) VALUES (?,?)", (guru_id, kelas))
-        conn.commit(); conn.close()
-        return True
-    except: return False
-
-def hapus_guru_kelas(guru_id, kelas):
-    if sb_ok():
-        try:
-            get_sb().table("guru_kelas").delete().eq("guru_id",guru_id).eq("kelas",kelas).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("DELETE FROM guru_kelas WHERE guru_id=? AND kelas=?", (guru_id, kelas))
-    conn.commit(); conn.close()
-
-def get_guru_by_kelas(kelas):
-    if sb_ok():
-        try:
-            df = _sb_df("guru_kelas","guru_id",{"kelas":kelas})
-            if df is not None and not df.empty:
-                ids = df["guru_id"].tolist()
-                res = get_sb().table("guru").select("id,nama,kelas").in_("id",ids).execute()
-                return res.data or []
-        except: pass
-    try:
-        conn = get_conn()
-        rows = conn.execute("""
-            SELECT DISTINCT g.id,g.nama,g.kelas FROM guru g
-            LEFT JOIN guru_kelas gk ON gk.guru_id=g.id
-            WHERE (g.kelas=? OR gk.kelas=?) AND g.status='Aktif'
-        """, (kelas, kelas)).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-    except: return []
-
-# ── SISWA ─────────────────────────────────────────────────────────
-def get_siswa_by_kelas(kelas):
-    if sb_ok():
-        df = _sb_df("siswa","id,nama,kelas,status",{"kelas":kelas,"status":"Aktif"},"nama")
-        if df is not None: return df
-    conn = get_conn()
-    df = pd.read_sql("SELECT id,nama,kelas,status FROM siswa WHERE kelas=? AND status='Aktif' ORDER BY nama", conn, params=[kelas])
-    conn.close()
-    return df
-
-def get_siswa_by_kelas_lengkap(kelas):
-    if sb_ok():
-        df = _sb_df("siswa","*",{"kelas":kelas,"status":"Aktif"},"nama")
-        if df is not None: return df
-    try:
-        conn = get_conn()
-        df = pd.read_sql("SELECT * FROM siswa WHERE kelas=? AND status='Aktif' ORDER BY nama", conn, params=[kelas])
-        conn.close()
-        return df
-    except: return get_siswa_by_kelas(kelas)
-
-def add_siswa_bulk(names, kelas):
-    for nama in names:
-        if sb_ok():
-            try:
-                get_sb().table("siswa").insert({"nama":nama.strip(),"kelas":kelas,"status":"Aktif"}).execute()
-                continue
-            except: pass
-        try:
-            conn = get_conn()
-            conn.execute("INSERT OR IGNORE INTO siswa (nama,kelas) VALUES (?,?)", (nama.strip(), kelas))
-            conn.commit(); conn.close()
-        except: pass
-
-def add_siswa_lengkap(nama, kelas, nis="", nisn="", alamat="", fase=""):
-    data = {"nama":nama.strip(),"kelas":kelas,"status":"Aktif","nis":nis,"nisn":nisn,"alamat":alamat,"fase":fase}
-    if sb_ok():
-        try:
-            get_sb().table("siswa").insert(data).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("INSERT OR IGNORE INTO siswa (nama,kelas,nis,nisn,alamat,fase) VALUES (?,?,?,?,?,?)",
-                 (nama.strip(),kelas,nis,nisn,alamat,fase))
-    conn.commit(); conn.close()
-
-def update_siswa_info(siswa_id, nis="", nisn="", alamat="", fase=""):
-    data = {"nis":nis,"nisn":nisn,"alamat":alamat,"fase":fase}
-    if sb_ok():
-        try:
-            get_sb().table("siswa").update(data).eq("id",siswa_id).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("UPDATE siswa SET nis=?,nisn=?,alamat=?,fase=? WHERE id=?", (nis,nisn,alamat,fase,siswa_id))
-    conn.commit(); conn.close()
-
-def get_semua_kelas():
-    if sb_ok():
-        try:
-            res = get_sb().table("guru").select("kelas").neq("kelas","Semua Tingkat").execute()
-            return sorted(set(r["kelas"] for r in res.data if r.get("kelas")))
-        except: pass
-    conn = get_conn()
-    rows = conn.execute("SELECT DISTINCT kelas FROM guru WHERE kelas!='Semua Tingkat' AND kelas IS NOT NULL ORDER BY kelas").fetchall()
-    conn.close()
-    return [r["kelas"] for r in rows]
-
-# ── ABSENSI GURU ──────────────────────────────────────────────────
-def get_absen_guru_hari(tanggal):
-    all_g = get_all_guru()
-    if sb_ok():
-        try:
-            res = get_sb().table("absen_guru").select("guru_id,status,keterangan").eq("tanggal",tanggal).execute()
-            filled = {r["guru_id"]: r for r in res.data}
-            rows = []
-            for _, g in all_g.iterrows():
-                ab = filled.get(g["id"], {})
-                rows.append({"id":g["id"],"nama":g["nama"],"kelas":g["kelas"],
-                             "status":ab.get("status","?"),"keterangan":ab.get("keterangan",""),
-                             "sudah_isi":1 if ab else 0})
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT g.id, g.nama, g.kelas,
-               COALESCE(a.status,'?') as status,
-               COALESCE(a.keterangan,'') as keterangan,
-               CASE WHEN a.id IS NULL THEN 0 ELSE 1 END as sudah_isi
-        FROM guru g
-        LEFT JOIN absen_guru a ON a.guru_id=g.id AND a.tanggal=?
-        WHERE g.status='Aktif' ORDER BY g.kelas,g.nama
-    """, conn, params=[tanggal])
-    conn.close()
-    return df
-
-def upsert_absen_guru(guru_id, tanggal, status, keterangan=""):
-    data = {"guru_id":guru_id,"tanggal":tanggal,"status":status,"keterangan":keterangan}
-    if sb_ok():
-        try:
-            get_sb().table("absen_guru").upsert(data, on_conflict="guru_id,tanggal").execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("""INSERT INTO absen_guru (guru_id,tanggal,status,keterangan) VALUES (?,?,?,?)
-        ON CONFLICT(guru_id,tanggal) DO UPDATE SET status=excluded.status,keterangan=excluded.keterangan""",
-        (guru_id,tanggal,status,keterangan))
-    conn.commit(); conn.close()
-
-def get_status_absen_guru(guru_id, tanggal):
-    if sb_ok():
-        r = _sb_one("absen_guru","status,keterangan",{"guru_id":guru_id,"tanggal":tanggal})
-        return r
-    conn = get_conn()
-    row = conn.execute("SELECT status,keterangan FROM absen_guru WHERE guru_id=? AND tanggal=?",(guru_id,tanggal)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-def get_absen_guru_rekap(bulan, tahun):
-    bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-    if sb_ok():
-        try:
-            from collections import defaultdict
-            g_res = get_sb().table("guru").select("id,nama,kelas").eq("status","Aktif").execute()
-            a_res = get_sb().table("absen_guru").select("guru_id,status").like("tanggal",f"{bulan_str}%").execute()
-            counts = defaultdict(lambda: {"H":0,"A":0,"I":0,"S":0,"total":0})
-            for a in a_res.data:
-                gid = a["guru_id"]; st = a["status"]
-                if st in counts[gid]: counts[gid][st] += 1
-                counts[gid]["total"] += 1
-            rows = []
-            for g in g_res.data:
-                c = counts[g["id"]]
-                rows.append({"nama":g["nama"],"kelas":g["kelas"],
-                    "hadir":c["H"],"alpa":c["A"],"izin":c["I"],"sakit":c["S"],"total_hari":c["total"]})
-            return pd.DataFrame(rows).sort_values("nama")
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT g.nama, g.kelas,
-               SUM(CASE WHEN a.status='H' THEN 1 ELSE 0 END) as hadir,
-               SUM(CASE WHEN a.status='A' THEN 1 ELSE 0 END) as alpa,
-               SUM(CASE WHEN a.status='I' THEN 1 ELSE 0 END) as izin,
-               SUM(CASE WHEN a.status='S' THEN 1 ELSE 0 END) as sakit,
-               COUNT(a.id) as total_hari
-        FROM guru g LEFT JOIN absen_guru a ON a.guru_id=g.id AND a.tanggal LIKE ?
-        WHERE g.status='Aktif' GROUP BY g.id ORDER BY g.nama
-    """, conn, params=[f"{bulan_str}%"])
-    conn.close()
-    return df
-
-def get_guru_tidak_hadir(tanggal):
-    df = get_absen_guru_hari(tanggal)
-    return df[df["status"] != "H"] if not df.empty else df
-
-def get_summary_hari(tanggal):
-    df = get_absen_guru_hari(tanggal)
-    total  = len(df)
-    hadir  = len(df[df["status"]=="H"])
-    jurnal = 0
-    if sb_ok():
-        try:
-            res = get_sb().table("jurnal").select("id",count="exact").eq("tanggal",tanggal).execute()
-            jurnal = res.count or 0
-        except: pass
-    else:
-        try:
-            conn = get_conn()
-            jurnal = conn.execute("SELECT COUNT(*) FROM jurnal WHERE tanggal=?", (tanggal,)).fetchone()[0]
-            conn.close()
-        except: pass
-    return {"total_guru":total,"hadir_guru":hadir,"absen_guru":total-hadir,"jurnal_hari":jurnal}
-
-# ── ABSENSI SISWA ─────────────────────────────────────────────────
-def get_absen_siswa_hari(kelas, tanggal):
-    df_s = get_siswa_by_kelas(kelas)
-    if df_s.empty: return pd.DataFrame(columns=["id","nama","status","keterangan"])
-    if sb_ok():
-        try:
-            sids = df_s["id"].tolist()
-            res  = get_sb().table("absen_siswa").select("siswa_id,status,keterangan")\
-                .eq("tanggal",tanggal).in_("siswa_id",sids).execute()
-            filled = {r["siswa_id"]: r for r in res.data}
-            rows = [{"id":int(r["id"]),"nama":r["nama"],
-                     "status":filled.get(int(r["id"]),{}).get("status","H"),
-                     "keterangan":filled.get(int(r["id"]),{}).get("keterangan","")}
-                    for _, r in df_s.iterrows()]
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT s.id, s.nama, COALESCE(a.status,'H') as status, COALESCE(a.keterangan,'') as keterangan
-        FROM siswa s LEFT JOIN absen_siswa a ON a.siswa_id=s.id AND a.tanggal=?
-        WHERE s.kelas=? AND s.status='Aktif' ORDER BY s.nama
-    """, conn, params=[tanggal, kelas])
-    conn.close()
-    return df
-
-def upsert_absen_siswa_bulk(data, guru_id, tanggal):
-    for siswa_id, status, keterangan in data:
-        d = {"siswa_id":siswa_id,"guru_id":guru_id,"tanggal":tanggal,"status":status,"keterangan":keterangan}
-        if sb_ok():
-            try:
-                get_sb().table("absen_siswa").upsert(d, on_conflict="siswa_id,tanggal").execute()
-                continue
-            except: pass
-        try:
-            conn = get_conn()
-            conn.execute("""INSERT INTO absen_siswa (siswa_id,guru_id,tanggal,status,keterangan) VALUES (?,?,?,?,?)
-                ON CONFLICT(siswa_id,tanggal) DO UPDATE SET status=excluded.status,keterangan=excluded.keterangan""",
-                (siswa_id,guru_id,tanggal,status,keterangan))
-            conn.commit(); conn.close()
-        except: pass
-
-def get_absen_siswa_rekap(kelas, bulan, tahun):
-    bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-    df_s = get_siswa_by_kelas(kelas)
-    if df_s.empty: return pd.DataFrame()
-    if sb_ok():
-        try:
-            from collections import defaultdict
-            sids = df_s["id"].tolist()
-            res  = get_sb().table("absen_siswa").select("siswa_id,status")\
-                .in_("siswa_id",sids).like("tanggal",f"{bulan_str}%").execute()
-            counts = defaultdict(lambda: {"H":0,"A":0,"I":0,"S":0,"total":0})
-            for a in res.data:
-                sid = a["siswa_id"]; st = a["status"]
-                if st in counts[sid]: counts[sid][st] += 1
-                counts[sid]["total"] += 1
-            rows = []
-            for _, s in df_s.iterrows():
-                c = counts[s["id"]]; total = c["total"] or 0; h = c["H"]
-                rows.append({"nama":s["nama"],"hadir":h,"alpa":c["A"],"izin":c["I"],
-                             "sakit":c["S"],"total_hari":total,
-                             "pct_hadir":round(h/total*100,1) if total else 0})
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT s.nama,
-               SUM(CASE WHEN a.status='H' THEN 1 ELSE 0 END) as hadir,
-               SUM(CASE WHEN a.status='A' THEN 1 ELSE 0 END) as alpa,
-               SUM(CASE WHEN a.status='I' THEN 1 ELSE 0 END) as izin,
-               SUM(CASE WHEN a.status='S' THEN 1 ELSE 0 END) as sakit,
-               COUNT(a.id) as total_hari
-        FROM siswa s LEFT JOIN absen_siswa a ON a.siswa_id=s.id AND a.tanggal LIKE ?
-        WHERE s.kelas=? AND s.status='Aktif' GROUP BY s.id ORDER BY s.nama
-    """, conn, params=[f"{bulan_str}%", kelas])
-    conn.close()
-    if not df.empty:
-        df["pct_hadir"] = df.apply(lambda r: round(r["hadir"]/r["total_hari"]*100,1) if r["total_hari"] else 0, axis=1)
-    return df
-
-def get_siswa_tidak_hadir(tanggal):
-    if sb_ok():
-        try:
-            res = get_sb().table("absen_siswa").select("siswa_id,status").eq("tanggal",tanggal).neq("status","H").execute()
-            if not res.data: return pd.DataFrame()
-            sids  = [r["siswa_id"] for r in res.data]
-            s_res = get_sb().table("siswa").select("id,nama,kelas").in_("id",sids).execute()
-            s_map = {s["id"]: s for s in s_res.data}
-            st_map= {r["siswa_id"]: r["status"] for r in res.data}
-            rows  = [{"nama":s_map[sid]["nama"],"kelas":s_map[sid]["kelas"],"status":st_map[sid]}
-                     for sid in sids if sid in s_map]
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("""
-        SELECT s.nama, s.kelas, a.status FROM absen_siswa a
-        JOIN siswa s ON s.id=a.siswa_id WHERE a.tanggal=? AND a.status!='H'
-    """, conn, params=[tanggal])
-    conn.close()
-    return df
-
-# ── JURNAL ────────────────────────────────────────────────────────
-def simpan_jurnal(guru_id, tanggal, kelas, mapel, topik, aktivitas, media="", catatan=""):
-    data = {"guru_id":guru_id,"tanggal":tanggal,"kelas":kelas,"mapel":mapel,
-            "topik":topik,"aktivitas":aktivitas,"media":media,"catatan":catatan}
-    if sb_ok():
-        try:
-            get_sb().table("jurnal").insert(data).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("INSERT INTO jurnal (guru_id,tanggal,kelas,mapel,topik,aktivitas,media,catatan) VALUES (?,?,?,?,?,?,?,?)",
-        (guru_id,tanggal,kelas,mapel,topik,aktivitas,media,catatan))
-    conn.commit(); conn.close()
-
-def get_jurnal_guru(guru_id, limit=20):
-    if sb_ok():
-        try:
-            res = get_sb().table("jurnal").select("*").eq("guru_id",guru_id)\
-                .order("tanggal",desc=True).limit(limit).execute()
-            return pd.DataFrame(res.data or [])
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM jurnal WHERE guru_id=? ORDER BY tanggal DESC LIMIT ?", conn, params=[guru_id,limit])
-    conn.close()
-    return df
-
-def get_jurnal_semua(tanggal=None, limit=50):
-    if sb_ok():
-        try:
-            q = get_sb().table("jurnal").select("*, guru:guru_id(nama)")
-            if tanggal: q = q.eq("tanggal",tanggal)
-            res = q.order("tanggal",desc=True).limit(limit).execute()
-            rows = []
-            for r in res.data or []:
-                r["guru_nama"] = r.get("guru",{}).get("nama","") if isinstance(r.get("guru"),dict) else ""
-                rows.append(r)
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    sql    = "SELECT j.*, g.nama as guru_nama FROM jurnal j JOIN guru g ON g.id=j.guru_id"
-    params = []
-    if tanggal:
-        sql += " WHERE j.tanggal=?"
-        params.append(tanggal)
-    sql += f" ORDER BY j.tanggal DESC LIMIT {limit}"
-    df = pd.read_sql(sql, conn, params=params)
-    conn.close()
-    return df
-
-def get_jurnal_by_kelas(kelas, limit=100):
-    if sb_ok():
-        try:
-            res = get_sb().table("jurnal").select("*, guru:guru_id(nama)")\
-                .eq("kelas",kelas).order("tanggal",desc=True).limit(limit).execute()
-            rows = []
-            for r in res.data or []:
-                r["guru_nama"] = r.get("guru",{}).get("nama","") if isinstance(r.get("guru"),dict) else ""
-                rows.append(r)
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("""SELECT j.*,g.nama as guru_nama FROM jurnal j
-        JOIN guru g ON g.id=j.guru_id WHERE j.kelas=? ORDER BY j.tanggal DESC LIMIT ?""",
-        conn, params=[kelas, limit])
-    conn.close()
-    return df
-
-# ── AGENDA ────────────────────────────────────────────────────────
-def tambah_agenda(judul, deskripsi, tanggal, tanggal_end, kategori, dibuat_oleh):
-    tgl = str(tanggal); tgl_end = str(tanggal_end) if tanggal_end else ""
-    data = {"judul":judul,"deskripsi":deskripsi,"tanggal":tgl,"tanggal_end":tgl_end,
-            "kategori":kategori,"dibuat_oleh":dibuat_oleh}
-    if sb_ok():
-        try:
-            get_sb().table("agenda_sekolah").insert(data).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("INSERT INTO agenda_sekolah (judul,deskripsi,tanggal,tanggal_end,kategori,dibuat_oleh) VALUES (?,?,?,?,?,?)",
-        (judul,deskripsi,tgl,tgl_end,kategori,dibuat_oleh))
-    conn.commit(); conn.close()
-
-def hapus_agenda(agenda_id):
-    if sb_ok():
-        try:
-            get_sb().table("agenda_sekolah").delete().eq("id",agenda_id).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("DELETE FROM agenda_sekolah WHERE id=?", (agenda_id,))
-    conn.commit(); conn.close()
-
-def get_agenda_mendatang():
-    today = str(date.today())
-    if sb_ok():
-        try:
-            res = get_sb().table("agenda_sekolah").select("*").gte("tanggal",today).order("tanggal").execute()
-            return pd.DataFrame(res.data or [])
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM agenda_sekolah WHERE tanggal>=? ORDER BY tanggal", conn, params=[today])
-    conn.close()
-    return df
-
-def get_agenda_semua(limit=200):
-    if sb_ok():
-        try:
-            res = get_sb().table("agenda_sekolah").select("*").order("tanggal",desc=True).limit(limit).execute()
-            return pd.DataFrame(res.data or [])
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql(f"SELECT * FROM agenda_sekolah ORDER BY tanggal DESC LIMIT {limit}", conn)
-    conn.close()
-    return df
-
-# ── NILAI (legacy) ────────────────────────────────────────────────
-def upsert_nilai(siswa_id, guru_id, semester, tahun_ajar, mapel, p, k, s):
-    data = {"siswa_id":siswa_id,"guru_id":guru_id,"semester":semester,"tahun_ajar":tahun_ajar,
-            "mapel":mapel,"pengetahuan":p,"keterampilan":k,"sikap":s}
-    if sb_ok():
-        try:
-            get_sb().table("nilai_siswa").upsert(data, on_conflict="siswa_id,semester,tahun_ajar,mapel").execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("""INSERT INTO nilai_siswa (siswa_id,guru_id,semester,tahun_ajar,mapel,pengetahuan,keterampilan,sikap)
-        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(siswa_id,semester,tahun_ajar,mapel)
-        DO UPDATE SET pengetahuan=excluded.pengetahuan,keterampilan=excluded.keterampilan,sikap=excluded.sikap""",
-        (siswa_id,guru_id,semester,tahun_ajar,mapel,p,k,s))
-    conn.commit(); conn.close()
-
-def get_nilai_kelas(kelas, semester, tahun_ajar):
-    df_s = get_siswa_by_kelas(kelas)
-    if df_s.empty: return pd.DataFrame()
-    if sb_ok():
-        try:
-            sids = df_s["id"].tolist()
-            res  = get_sb().table("nilai_siswa").select("siswa_id,mapel,pengetahuan,keterampilan,sikap")\
-                .in_("siswa_id",sids).eq("semester",semester).eq("tahun_ajar",tahun_ajar).execute()
-            s_map = {int(s["id"]):s["nama"] for _,s in df_s.iterrows()}
-            rows  = [{"siswa_id":r["siswa_id"],"siswa":s_map.get(r["siswa_id"],""),
-                      "mapel":r["mapel"],"pengetahuan":r["pengetahuan"],
-                      "keterampilan":r["keterampilan"],"sikap":r["sikap"]} for r in res.data]
-            return pd.DataFrame(rows)
-        except: pass
-    conn = get_conn()
-    sids = df_s["id"].tolist()
-    ph   = ",".join(["?"]*len(sids))
-    df   = pd.read_sql(f"""SELECT n.siswa_id, s.nama as siswa, n.mapel,n.pengetahuan,n.keterampilan,n.sikap
-        FROM nilai_siswa n JOIN siswa s ON s.id=n.siswa_id
-        WHERE n.siswa_id IN ({ph}) AND n.semester=? AND n.tahun_ajar=?""",
-        conn, params=sids+[semester,tahun_ajar])
-    conn.close()
-    return df
-
-def get_nilai_siswa(siswa_id, semester, tahun_ajar):
-    if sb_ok():
-        try:
-            res = get_sb().table("nilai_siswa").select("mapel,pengetahuan,keterampilan,sikap,capaian")\
-                .eq("siswa_id",siswa_id).eq("semester",semester).eq("tahun_ajar",tahun_ajar).execute()
-            return pd.DataFrame(res.data or [])
-        except: pass
-    conn = get_conn()
-    df = pd.read_sql("SELECT mapel,pengetahuan,keterampilan,sikap,capaian FROM nilai_siswa WHERE siswa_id=? AND semester=? AND tahun_ajar=?",
-        conn, params=[siswa_id,semester,tahun_ajar])
-    conn.close()
-    return df
-
-def get_nilai_satu_siswa_mapel(siswa_id, semester, tahun_ajar, mapel):
-    if sb_ok():
-        r = _sb_one("nilai_siswa","pengetahuan,keterampilan,sikap",
-                    {"siswa_id":siswa_id,"semester":semester,"tahun_ajar":tahun_ajar,"mapel":mapel})
-        return r
-    conn = get_conn()
-    row = conn.execute("SELECT pengetahuan,keterampilan,sikap FROM nilai_siswa WHERE siswa_id=? AND semester=? AND tahun_ajar=? AND mapel=?",
-        (siswa_id,semester,tahun_ajar,mapel)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+            val = float(val) if val is not None and str(val).strip() not in ('','None','nan') else None
+        except:
+            val = None
+        if val is None:
+            continue
+        if val >= 76:
+            baik.append(topik)
+        else:
+            perlu.append(topik)
+    
+    hasil = ""
+    if baik:
+        if len(baik) == 1:
+            hasil += f"Baik dalam {baik[0]}. "
+        else:
+            gabung = ", ".join(baik[:-1]) + f" dan {baik[-1]}"
+            hasil += f"Baik dalam {gabung}. "
+    if perlu:
+        if len(perlu) == 1:
+            hasil += f"Perlu bimbingan dalam {perlu[0]}."
+        else:
+            gabung = ", ".join(perlu[:-1]) + f" dan {perlu[-1]}"
+            hasil += f"Perlu bimbingan dalam {gabung}."
+    
+    if not hasil:
+        # Fallback ke template biasa berdasarkan NR
+        from statistics import mean
+        vals = [float(v) for k,v in nilai_dict.items() if k.startswith('tp') and v is not None and str(v).strip() not in ('','None','nan')]
+        nr = mean(vals) if vals else 0
+        pred = get_predikat(nr)
+        return CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"]).format(mapel=mapel)
+    
+    return hasil.strip()
 
 def get_predikat(nilai):
-    if nilai is None: return "-"
-    if nilai >= 90: return "A"
-    if nilai >= 80: return "B"
-    if nilai >= 70: return "C"
+    if nilai is None or (isinstance(nilai, float) and pd.isna(nilai)):
+        return "-"
+    if nilai >= 91: return "A"
+    if nilai >= 76: return "B"
+    if nilai >= 61: return "C"
     return "D"
 
-# ── NILAI TP ──────────────────────────────────────────────────────
-def hitung_nr(tp_dict):
-    """NR = rata-rata TP (50%) + ASTS (25%) + ASAS (25%)."""
-    tp_vals = []
-    for c in ['tp1','tp2','tp3','tp4','tp5','tp6','tp7','tp8','tp9','tp10']:
-        v = tp_dict.get(c)
-        if v is not None and str(v).strip() not in ('','None','nan'):
-            try: tp_vals.append(float(v))
-            except: pass
-    rata_tp = sum(tp_vals)/len(tp_vals) if tp_vals else None
+PREDIKAT_LABEL = {"A":"Sangat Baik","B":"Baik","C":"Cukup","D":"Perlu Bimbingan"}
 
-    def safe_float(val):
-        try:
-            return float(val) if val is not None and str(val).strip() not in ('','None','nan') else None
-        except: return None
+def get_capaian_otomatis(mapel, nilai_p, nilai_k):
+    avg = None
+    vals = [v for v in [nilai_p, nilai_k] if v is not None and not (isinstance(v, float) and pd.isna(v))]
+    if vals:
+        avg = sum(vals) / len(vals)
+    pred = get_predikat(avg)
+    template = CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"])
+    return template.format(mapel=mapel)
 
-    asts = safe_float(tp_dict.get('asts'))
-    asas = safe_float(tp_dict.get('asas'))
-
-    if rata_tp is not None and asts is not None and asas is not None:
-        return round((rata_tp * 0.5) + (asts * 0.25) + (asas * 0.25), 2)
-    elif rata_tp is not None and asts is not None:
-        return round((rata_tp * 0.667) + (asts * 0.333), 2)
-    elif rata_tp is not None and asas is not None:
-        return round((rata_tp * 0.667) + (asas * 0.333), 2)
-    elif rata_tp is not None:
-        return round(rata_tp, 2)
-    elif asts is not None and asas is not None:
-        return round((asts + asas) / 2, 2)
-    return 0.0
-
-def upsert_nilai_tp(siswa_id, guru_id, kelas, semester, tahun_ajar, mapel, tp_dict, capaian=""):
-    nr   = hitung_nr(tp_dict)
-    data = {"siswa_id":siswa_id,"guru_id":guru_id,"kelas":kelas,"semester":semester,
-            "tahun_ajar":tahun_ajar,"mapel":mapel,"nr":nr,"capaian_maksimal":capaian}
-    for c in TP_COLS:
-        data[c] = tp_dict.get(c)
-    if sb_ok():
-        try:
-            get_sb().table("nilai_tp").upsert(data, on_conflict="siswa_id,semester,tahun_ajar,mapel").execute()
-            return nr
-        except Exception as e:
-            print(f"upsert_nilai_tp sb: {e}")
-    try:
-        conn = get_conn()
-        conn.execute("""INSERT INTO nilai_tp
-            (siswa_id,guru_id,kelas,semester,tahun_ajar,mapel,
-             tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,asts,asas,nr,capaian_maksimal)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(siswa_id,semester,tahun_ajar,mapel) DO UPDATE SET
-            guru_id=excluded.guru_id,kelas=excluded.kelas,
-            tp1=excluded.tp1,tp2=excluded.tp2,tp3=excluded.tp3,tp4=excluded.tp4,tp5=excluded.tp5,
-            tp6=excluded.tp6,tp7=excluded.tp7,tp8=excluded.tp8,tp9=excluded.tp9,tp10=excluded.tp10,
-            asts=excluded.asts,asas=excluded.asas,nr=excluded.nr,capaian_maksimal=excluded.capaian_maksimal""",
-            (siswa_id,guru_id,kelas,semester,tahun_ajar,mapel,
-             data.get("tp1"),data.get("tp2"),data.get("tp3"),data.get("tp4"),data.get("tp5"),
-             data.get("tp6"),data.get("tp7"),data.get("tp8"),data.get("tp9"),data.get("tp10"),
-             data.get("asts"),data.get("asas"),nr,capaian))
-        conn.commit(); conn.close()
-    except Exception as e:
-        print(f"upsert_nilai_tp sqlite: {e}")
-    return nr
-
-def get_nilai_tp_siswa(siswa_id, semester, tahun_ajar, mapel):
-    if sb_ok():
-        r = _sb_one("nilai_tp","*",{"siswa_id":siswa_id,"semester":semester,"tahun_ajar":tahun_ajar,"mapel":mapel})
-        if r is not None: return r
-    try:
-        conn = get_conn()
-        row  = conn.execute("""SELECT tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,asts,asas,nr,capaian_maksimal
-            FROM nilai_tp WHERE siswa_id=? AND semester=? AND tahun_ajar=? AND mapel=?""",
-            (siswa_id,semester,tahun_ajar,mapel)).fetchone()
-        conn.close()
-        return dict(row) if row else {}
-    except: return {}
-
-def get_nilai_tp_kelas(kelas, semester, tahun_ajar, mapel):
-    df_s = get_siswa_by_kelas(kelas)
-    if df_s.empty: return pd.DataFrame()
-    if sb_ok():
-        try:
-            sids = df_s["id"].tolist()
-            res  = get_sb().table("nilai_tp").select("*").in_("siswa_id",sids)\
-                .eq("semester",semester).eq("tahun_ajar",tahun_ajar).eq("mapel",mapel).execute()
-            n_map = {r["siswa_id"]:r for r in res.data}
-            rows  = []
-            for _, s in df_s.sort_values("nama").iterrows():
-                n = n_map.get(s["id"],{})
-                rows.append({"siswa_id":s["id"],"siswa":s["nama"],
-                    **{c:n.get(c) for c in TP_COLS},
-                    "nr":n.get("nr"),"capaian_maksimal":n.get("capaian_maksimal","")})
-            return pd.DataFrame(rows)
-        except: pass
-    try:
-        conn = get_conn()
-        sids = df_s["id"].tolist()
-        ph   = ",".join(["?"]*len(sids))
-        df   = pd.read_sql(f"""SELECT s.id as siswa_id,s.nama as siswa,
-            n.tp1,n.tp2,n.tp3,n.tp4,n.tp5,n.tp6,n.tp7,n.tp8,n.tp9,n.tp10,n.asts,n.asas,n.nr,n.capaian_maksimal
-            FROM siswa s LEFT JOIN nilai_tp n ON n.siswa_id=s.id
-            AND n.semester=? AND n.tahun_ajar=? AND n.mapel=?
-            WHERE s.id IN ({ph}) AND s.status='Aktif' ORDER BY s.nama""",
-            conn, params=[semester,tahun_ajar,mapel]+sids)
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-def get_nr_semua_mapel_siswa(siswa_id, semester, tahun_ajar):
-    if sb_ok():
-        try:
-            res = get_sb().table("nilai_tp").select("mapel,nr,capaian_maksimal")\
-                .eq("siswa_id",siswa_id).eq("semester",semester).eq("tahun_ajar",tahun_ajar).execute()
-            return pd.DataFrame(res.data or [])
-        except: pass
-    try:
-        conn = get_conn()
-        df   = pd.read_sql("SELECT mapel,nr,capaian_maksimal FROM nilai_tp WHERE siswa_id=? AND semester=? AND tahun_ajar=? ORDER BY mapel",
-            conn, params=[siswa_id,semester,tahun_ajar])
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-def get_rekap_nr_kelas(kelas, semester, tahun_ajar):
-    df_s = get_siswa_by_kelas(kelas)
-    if df_s.empty: return pd.DataFrame()
-    if sb_ok():
-        try:
-            sids = df_s["id"].tolist()
-            res  = get_sb().table("nilai_tp").select("siswa_id,mapel,nr,capaian_maksimal")\
-                .in_("siswa_id",sids).eq("semester",semester).eq("tahun_ajar",tahun_ajar).execute()
-            s_map = {int(s["id"]):s["nama"] for _,s in df_s.iterrows()}
-            rows  = [{"siswa_id":r["siswa_id"],"siswa":s_map.get(r["siswa_id"],""),
-                      "mapel":r["mapel"],"nr":r["nr"],"capaian_maksimal":r.get("capaian_maksimal","")}
-                     for r in res.data]
-            return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["siswa_id","siswa","mapel","nr","capaian_maksimal"])
-        except: pass
-    try:
-        conn = get_conn()
-        sids = df_s["id"].tolist()
-        ph   = ",".join(["?"]*len(sids))
-        df   = pd.read_sql(f"""SELECT s.id as siswa_id,s.nama as siswa,n.mapel,n.nr,n.capaian_maksimal
-            FROM siswa s LEFT JOIN nilai_tp n ON n.siswa_id=s.id AND n.semester=? AND n.tahun_ajar=?
-            WHERE s.id IN ({ph}) AND s.status='Aktif' ORDER BY s.nama,n.mapel""",
-            conn, params=[semester,tahun_ajar]+sids)
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-# ── EKSKUL & CATATAN ──────────────────────────────────────────────
-def upsert_ekskul(siswa_id, guru_id, semester, tahun_ajar, nama_ekskul, keterangan):
-    data = {"siswa_id":siswa_id,"guru_id":guru_id,"semester":semester,"tahun_ajar":tahun_ajar,
-            "nama_ekskul":nama_ekskul,"keterangan":keterangan}
-    if sb_ok():
-        try:
-            get_sb().table("ekskul_siswa").upsert(data, on_conflict="siswa_id,semester,tahun_ajar,nama_ekskul").execute()
-            return
-        except: pass
-    try:
-        conn = get_conn()
-        conn.execute("""INSERT INTO ekskul_siswa (siswa_id,guru_id,semester,tahun_ajar,nama_ekskul,keterangan)
-            VALUES (?,?,?,?,?,?) ON CONFLICT(siswa_id,semester,tahun_ajar,nama_ekskul)
-            DO UPDATE SET keterangan=excluded.keterangan""",
-            (siswa_id,guru_id,semester,tahun_ajar,nama_ekskul,keterangan))
-        conn.commit(); conn.close()
-    except: pass
-
-def get_ekskul_siswa(siswa_id, semester, tahun_ajar):
-    if sb_ok():
-        try:
-            res = get_sb().table("ekskul_siswa").select("nama_ekskul,keterangan")\
-                .eq("siswa_id",siswa_id).eq("semester",semester).eq("tahun_ajar",tahun_ajar).execute()
-            return pd.DataFrame(res.data or [])
-        except: pass
-    try:
-        conn = get_conn()
-        df   = pd.read_sql("SELECT nama_ekskul,keterangan FROM ekskul_siswa WHERE siswa_id=? AND semester=? AND tahun_ajar=? ORDER BY id",
-            conn, params=[siswa_id,semester,tahun_ajar])
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-def upsert_catatan(siswa_id, guru_id, semester, tahun_ajar, catatan_wali, tanggapan_ortu=""):
-    data = {"siswa_id":siswa_id,"guru_id":guru_id,"semester":semester,"tahun_ajar":tahun_ajar,
-            "catatan_wali":catatan_wali,"tanggapan_ortu":tanggapan_ortu}
-    if sb_ok():
-        try:
-            get_sb().table("catatan_rapor").upsert(data, on_conflict="siswa_id,semester,tahun_ajar").execute()
-            return
-        except: pass
-    try:
-        conn = get_conn()
-        conn.execute("""INSERT INTO catatan_rapor (siswa_id,guru_id,semester,tahun_ajar,catatan_wali,tanggapan_ortu)
-            VALUES (?,?,?,?,?,?) ON CONFLICT(siswa_id,semester,tahun_ajar)
-            DO UPDATE SET catatan_wali=excluded.catatan_wali,tanggapan_ortu=excluded.tanggapan_ortu""",
-            (siswa_id,guru_id,semester,tahun_ajar,catatan_wali,tanggapan_ortu))
-        conn.commit(); conn.close()
-    except: pass
-
-def get_catatan(siswa_id, semester, tahun_ajar):
-    if sb_ok():
-        r = _sb_one("catatan_rapor","catatan_wali,tanggapan_ortu",
-                    {"siswa_id":siswa_id,"semester":semester,"tahun_ajar":tahun_ajar})
-        return r if r else {"catatan_wali":"","tanggapan_ortu":""}
-    try:
-        conn = get_conn()
-        row  = conn.execute("SELECT catatan_wali,tanggapan_ortu FROM catatan_rapor WHERE siswa_id=? AND semester=? AND tahun_ajar=?",
-            (siswa_id,semester,tahun_ajar)).fetchone()
-        conn.close()
-        return dict(row) if row else {"catatan_wali":"","tanggapan_ortu":""}
-    except: return {"catatan_wali":"","tanggapan_ortu":""}
-
-def get_absen_count_siswa(siswa_id, semester, tahun_ajar):
-    try:
-        bulan_range = [7,8,9,10,11,12] if "Ganjil" in semester else [1,2,3,4,5,6]
-        tahun = tahun_ajar.split("/")[0] if "Ganjil" in semester else tahun_ajar.split("/")[1]
-        result = {"S":0,"I":0,"A":0}
-        if sb_ok():
-            try:
-                for b in bulan_range:
-                    res = get_sb().table("absen_siswa").select("status")\
-                        .eq("siswa_id",siswa_id).like("tanggal",f"{tahun}-{str(b).zfill(2)}%").execute()
-                    for r in res.data:
-                        if r["status"] in result: result[r["status"]] += 1
-                return result
-            except: pass
-        conn = get_conn()
-        for b in bulan_range:
-            rows = conn.execute("SELECT status,COUNT(*) as cnt FROM absen_siswa WHERE siswa_id=? AND tanggal LIKE ? GROUP BY status",
-                (siswa_id, f"{tahun}-{str(b).zfill(2)}%")).fetchall()
-            for r in rows:
-                if r["status"] in result: result[r["status"]] += r["cnt"]
-        conn.close()
-        return result
-    except: return {"S":0,"I":0,"A":0}
-
-# ── FILE METADATA ─────────────────────────────────────────────────
-def simpan_metadata_file(guru_id, bucket, path, nama_file, kategori, ukuran=0):
-    data = {"guru_id":guru_id,"bucket":bucket,"path":path,"nama_file":nama_file,"kategori":kategori,"ukuran":ukuran}
-    if sb_ok():
-        try:
-            get_sb().table("file_metadata").upsert(data, on_conflict="bucket,path").execute()
-            return
-        except: pass
-    try:
-        conn = get_conn()
-        conn.execute("INSERT OR REPLACE INTO file_metadata (guru_id,bucket,path,nama_file,kategori,ukuran) VALUES (?,?,?,?,?,?)",
-            (guru_id,bucket,path,nama_file,kategori,ukuran))
-        conn.commit(); conn.close()
-    except: pass
-
-def get_files_guru(guru_id, kategori=None):
-    filters = {"guru_id":guru_id}
-    if kategori: filters["kategori"] = kategori
-    if sb_ok():
-        df = _sb_df("file_metadata","*",filters,"created_at")
-        if df is not None: return df
-    try:
-        conn = get_conn()
-        sql  = "SELECT * FROM file_metadata WHERE guru_id=?"
-        params = [guru_id]
-        if kategori:
-            sql += " AND kategori=?"
-            params.append(kategori)
-        df = pd.read_sql(sql+" ORDER BY kategori,created_at DESC", conn, params=params)
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-def get_all_files_by_kategori(kategori):
-    if sb_ok():
-        try:
-            res = get_sb().table("file_metadata").select("*, guru:guru_id(nama,kelas)")\
-                .eq("kategori",kategori).order("created_at",desc=True).execute()
-            rows = []
-            for r in res.data or []:
-                r["guru_nama"] = r.get("guru",{}).get("nama","") if isinstance(r.get("guru"),dict) else ""
-                r["kelas"]     = r.get("guru",{}).get("kelas","") if isinstance(r.get("guru"),dict) else ""
-                rows.append(r)
-            return pd.DataFrame(rows)
-        except: pass
-    try:
-        conn = get_conn()
-        df   = pd.read_sql("""SELECT f.*,g.nama as guru_nama,g.kelas FROM file_metadata f
-            JOIN guru g ON g.id=f.guru_id WHERE f.kategori=? ORDER BY f.created_at DESC""",
-            conn, params=[kategori])
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-def hapus_metadata_file(file_id):
-    if sb_ok():
-        try:
-            get_sb().table("file_metadata").delete().eq("id",file_id).execute()
-            return
-        except: pass
-    conn = get_conn()
-    conn.execute("DELETE FROM file_metadata WHERE id=?", (file_id,))
-    conn.commit(); conn.close()
-
-# ── SUPABASE STORAGE ──────────────────────────────────────────────
-def upload_file_storage(bucket, path, file_bytes, content_type="application/octet-stream"):
-    sb = get_sb()
-    if not sb: return False
-    try:
-        sb.storage.from_(bucket).upload(path, file_bytes, {"content-type":content_type,"upsert":"true"})
-        return True
-    except Exception as e:
-        print(f"upload_file_storage: {e}")
-        return False
-
-def list_files_storage(bucket, folder=""):
-    sb = get_sb()
-    if not sb: return []
-    try:
-        return sb.storage.from_(bucket).list(folder) or []
-    except: return []
-
-def download_file_storage(bucket, path):
-    sb = get_sb()
-    if not sb: return b""
-    try:
-        return sb.storage.from_(bucket).download(path)
-    except: return b""
-
-def delete_file_storage(bucket, path):
-    sb = get_sb()
-    if not sb: return False
-    try:
-        sb.storage.from_(bucket).remove([path])
-        return True
-    except: return False
+def fmt_nilai(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "-"
+    return str(int(round(v)))
 
 
-# ── TOPIK TP ──────────────────────────────────────────────────────
+def generate_rapor_pdf(
+    nama_siswa: str,
+    kelas: str,
+    semester: str,
+    tahun_ajar: str,
+    nilai_df: pd.DataFrame,       # cols: mapel, pengetahuan, keterampilan, sikap, capaian
+    nama_wali_kelas: str = "",
+    nuptk_wali: str = "",
+    fase: str = "",
+    nis: str = "",
+    nisn: str = "",
+    alamat_siswa: str = "",
+    ekskul_df: pd.DataFrame = None,
+    absen_count: dict = None,     # {"S":0,"I":0,"A":0}
+    catatan_wali: str = "",
+    tanggapan_ortu: str = "",
+    nama_kepala: str = NAMA_KEPSEK,
+    nuptk_kepala: str = NUPTK_KEPSEK,
+) -> bytes:
 
-def init_topik_tp_table():
-    conn = get_conn()
-    try:
-        conn.execute("""CREATE TABLE IF NOT EXISTS topik_tp (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER, kelas TEXT NOT NULL,
-            semester TEXT NOT NULL, tahun_ajar TEXT NOT NULL,
-            mapel TEXT NOT NULL, tp_nomor INTEGER NOT NULL,
-            nama_topik TEXT DEFAULT '',
-            UNIQUE(guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor))""")
-        conn.commit()
-    except Exception: pass
-    conn.close()
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=1.5*cm, rightMargin=1.5*cm,
+        topMargin=1.2*cm, bottomMargin=1.2*cm
+    )
 
-def upsert_topik_tp(guru_id, kelas, semester, tahun_ajar, mapel, tp_nomor, nama_topik):
-    data = {"guru_id":guru_id,"kelas":kelas,"semester":semester,
-            "tahun_ajar":tahun_ajar,"mapel":mapel,"tp_nomor":tp_nomor,"nama_topik":nama_topik}
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("topik_tp").upsert(data, on_conflict="guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor").execute()
-            return
-        except Exception as e: print(f"upsert_topik_tp: {e}")
-    try:
-        conn = get_conn()
-        conn.execute("""INSERT INTO topik_tp (guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor,nama_topik)
-            VALUES (?,?,?,?,?,?,?) ON CONFLICT(guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor)
-            DO UPDATE SET nama_topik=excluded.nama_topik""",
-            (guru_id,kelas,semester,tahun_ajar,mapel,tp_nomor,nama_topik))
-        conn.commit(); conn.close()
-    except Exception: pass
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK, leading=None):
+        return ParagraphStyle(
+            name,
+            fontName="Helvetica-Bold" if bold else "Helvetica",
+            fontSize=size,
+            textColor=color,
+            alignment=align,
+            leading=leading or (size * 1.4),
+            spaceAfter=0,
+            spaceBefore=0,
+        )
 
-def get_topik_tp(guru_id, kelas, semester, tahun_ajar, mapel):
-    """Return dict {tp_nomor: nama_topik}."""
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("topik_tp").select("tp_nomor,nama_topik")                .eq("guru_id",guru_id).eq("kelas",kelas).eq("semester",semester)                .eq("tahun_ajar",tahun_ajar).eq("mapel",mapel).execute()
-            return {r["tp_nomor"]: r["nama_topik"] for r in (res.data or [])}
-        except Exception: pass
-    try:
-        conn = get_conn()
-        rows = conn.execute("""SELECT tp_nomor, nama_topik FROM topik_tp
-            WHERE guru_id=? AND kelas=? AND semester=? AND tahun_ajar=? AND mapel=?""",
-            (guru_id,kelas,semester,tahun_ajar,mapel)).fetchall()
-        conn.close()
-        return {r["tp_nomor"]: r["nama_topik"] for r in rows}
-    except Exception:
-        return {}
+    W = A4[0] - 3*cm  # usable width
+
+    story = []
+
+    # ══ HEADER ════════════════════════════════════════════════════
+    header_data = [[
+        Paragraph("LAPORAN HASIL BELAJAR MURID", sty("h1", 12, True, TA_CENTER)),
+    ],[
+        Paragraph(f"(RAPOR)", sty("h2", 10, False, TA_CENTER)),
+    ]]
+    hdr_tbl = Table(header_data, colWidths=[W])
+    hdr_tbl.setStyle(TableStyle([
+        ("ALIGN",       (0,0),(-1,-1), "CENTER"),
+        ("TOPPADDING",  (0,0),(-1,-1), 2),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+    ]))
+    story.append(hdr_tbl)
+    story.append(Spacer(1, 6))
+
+    # ══ INFO SISWA ════════════════════════════════════════════════
+    # Mapping semester → nomor
+    sem_num = "1 (Satu)" if "Ganjil" in semester else "2 (Dua)"
+    # Fase otomatis dari kelas jika tidak diisi
+    if not fase:
+        kelas_num = kelas.strip()[:2].strip()
+        if kelas_num in ["I","II"]:       fase = "A"
+        elif kelas_num in ["III","IV"]:   fase = "B"
+        else:                              fase = "C"
+
+    info_left = [
+        ["Nama Murid", ":", nama_siswa],
+        ["NIS/NISN",   ":", f"{nis} / {nisn}" if (nis or nisn) else "-"],
+        ["Sekolah",    ":", NAMA_SEKOLAH],
+        ["Alamat",     ":", alamat_siswa or ALAMAT_SEKOLAH],
+    ]
+    info_right = [
+        ["Kelas",         ":", kelas],
+        ["Fase",          ":", fase],
+        ["Semester",      ":", sem_num],
+        ["Tahun Ajaran",  ":", tahun_ajar],
+    ]
+
+    def info_table(data):
+        tbl = Table(data, colWidths=[2.8*cm, 0.4*cm, None])
+        tbl.setStyle(TableStyle([
+            ("FONTNAME",     (0,0),(-1,-1), "Helvetica"),
+            ("FONTSIZE",     (0,0),(-1,-1), 8.5),
+            ("FONTNAME",     (0,0),(0,-1),  "Helvetica"),
+            ("TOPPADDING",   (0,0),(-1,-1), 2),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+            ("VALIGN",       (0,0),(-1,-1), "TOP"),
+            ("BOX",          (0,0),(-1,-1), 0.5, LGRAY),
+            ("INNERGRID",    (0,0),(-1,-1), 0.3, LGRAY),
+        ]))
+        return tbl
+
+    half = W/2 - 0.2*cm
+    info_tbl = Table(
+        [[info_table(info_left), info_table(info_right)]],
+        colWidths=[half+0.4*cm, half]
+    )
+    info_tbl.setStyle(TableStyle([
+        ("VALIGN",  (0,0),(-1,-1), "TOP"),
+        ("LEFTPADDING",  (1,0),(1,0), 4),
+    ]))
+    story.append(info_tbl)
+    story.append(Spacer(1, 8))
+
+    # ══ TABEL NILAI + CAPAIAN KOMPETENSI ═════════════════════════
+    # Header
+    nilai_header = [
+        [
+            Paragraph("No.", sty("th", 8, True, TA_CENTER)),
+            Paragraph("Mata Pelajaran", sty("th", 8, True, TA_CENTER)),
+            Paragraph("Nilai\nAkhir", sty("th", 8, True, TA_CENTER)),
+            Paragraph("Capaian Kompetensi", sty("th", 8, True, TA_CENTER)),
+        ]
+    ]
+
+    nilai_rows = []
+    if nilai_df is None or nilai_df.empty:
+        nilai_rows.append([
+            Paragraph("", sty("td",8)),
+            Paragraph("Belum ada data nilai", sty("td",8)),
+            Paragraph("", sty("td",8,False,TA_CENTER)),
+            Paragraph("", sty("td",8)),
+        ])
+    else:
+        for i, (_, r) in enumerate(nilai_df.iterrows(), 1):
+            mapel    = str(r.get("mapel",""))
+            p_val    = r.get("pengetahuan")
+            k_val    = r.get("keterampilan")
+            # Nilai akhir = rata-rata P dan K
+            vals = [v for v in [p_val, k_val] if v is not None and not (isinstance(v, float) and pd.isna(v))]
+            nilai_akhir = round(sum(vals)/len(vals)) if vals else None
+            # Capaian
+            capaian_custom = str(r.get("capaian","")).strip()
+            capaian = capaian_custom if capaian_custom else get_capaian_otomatis(mapel, p_val, k_val)
+
+            nilai_rows.append([
+                Paragraph(str(i), sty("td",8,False,TA_CENTER)),
+                Paragraph(mapel, sty("td",8)),
+                Paragraph(fmt_nilai(nilai_akhir), sty("td",8,True,TA_CENTER)),
+                Paragraph(capaian, sty("td",8)),
+            ])
+
+    all_rows = nilai_header + nilai_rows
+    col_w    = [0.8*cm, 3.8*cm, 1.5*cm, W - 0.8*cm - 3.8*cm - 1.5*cm]
+    nilai_tbl = Table(all_rows, colWidths=col_w, repeatRows=1)
+    nilai_tbl.setStyle(TableStyle([
+        # Header
+        ("BACKGROUND",    (0,0),(-1,0), LGRAY),
+        ("FONTNAME",      (0,0),(-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0,0),(-1,0), 8),
+        ("ALIGN",         (0,0),(-1,0), "CENTER"),
+        ("VALIGN",        (0,0),(-1,0), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,0), 4),
+        ("BOTTOMPADDING", (0,0),(-1,0), 4),
+        # Body
+        ("FONTNAME",      (0,1),(-1,-1), "Helvetica"),
+        ("FONTSIZE",      (0,1),(-1,-1), 8),
+        ("VALIGN",        (0,1),(-1,-1), "TOP"),
+        ("TOPPADDING",    (0,1),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,1),(-1,-1), 14),
+        # Grid
+        ("BOX",           (0,0),(-1,-1), 0.5, BLACK),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, LGRAY),
+    ]))
+    story.append(nilai_tbl)
+    story.append(Spacer(1, 10))
+
+    # ══ EKSKUL ═══════════════════════════════════════════════════
+    ekskul_header = [[
+        Paragraph("No.", sty("th",8,True,TA_CENTER)),
+        Paragraph("Ekstrakurikuler", sty("th",8,True,TA_CENTER)),
+        Paragraph("Keterangan", sty("th",8,True,TA_CENTER)),
+    ]]
+    ekskul_rows = []
+    if ekskul_df is not None and not ekskul_df.empty:
+        for i, (_, e) in enumerate(ekskul_df.iterrows(), 1):
+            ekskul_rows.append([
+                Paragraph(str(i), sty("td",8,False,TA_CENTER)),
+                Paragraph(str(e.get("nama_ekskul","")), sty("td",8)),
+                Paragraph(str(e.get("keterangan","")), sty("td",8)),
+            ])
+    else:
+        for i, nama in enumerate(["Pramuka","Komputer","Anak Beriman dan Berkepribadian"], 1):
+            ekskul_rows.append([
+                Paragraph(str(i), sty("td",8,False,TA_CENTER)),
+                Paragraph(nama, sty("td",8)),
+                Paragraph("", sty("td",8)),
+            ])
+
+    ekskul_tbl = Table(ekskul_header + ekskul_rows,
+                       colWidths=[0.8*cm, 5*cm, W-0.8*cm-5*cm], repeatRows=1)
+    ekskul_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0), LGRAY),
+        ("FONTNAME",      (0,0),(-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0,0),(-1,-1), 8),
+        ("ALIGN",         (0,0),(0,-1), "CENTER"),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 14),
+        ("BOX",           (0,0),(-1,-1), 0.5, BLACK),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, LGRAY),
+    ]))
+    story.append(ekskul_tbl)
+    story.append(Spacer(1, 8))
+
+    # ══ KETIDAKHADIRAN + CATATAN WALI KELAS ═══════════════════════
+    ab = absen_count or {"S":0,"I":0,"A":0}
+    absen_data = [
+        [Paragraph("Ketidakhadiran", sty("th",8,True,TA_CENTER)), "", Paragraph("Catatan Wali Kelas", sty("th",8,True,TA_CENTER))],
+        [Paragraph(f"Sakit              {ab.get('S',0)} hari", sty("td",8)), "",
+         Paragraph(catatan_wali or "-", sty("td",8))],
+        [Paragraph(f"Izin               {ab.get('I',0)} hari", sty("td",8)), "", ""],
+        [Paragraph(f"Tanpa Keterangan   {ab.get('A',0)} hari", sty("td",8)), "", ""],
+    ]
+    half_ab = W/2 - 0.3*cm
+    absen_tbl = Table(absen_data,
+                      colWidths=[half_ab, 0.6*cm, half_ab],
+                      rowHeights=[0.6*cm, None, None, None])
+    absen_tbl.setStyle(TableStyle([
+        ("FONTSIZE",      (0,0),(-1,-1), 8),
+        ("BACKGROUND",    (0,0),(0,0), LGRAY),
+        ("BACKGROUND",    (2,0),(2,0), LGRAY),
+        ("FONTNAME",      (0,0),(0,0), "Helvetica-Bold"),
+        ("FONTNAME",      (2,0),(2,0), "Helvetica-Bold"),
+        ("ALIGN",         (0,0),(0,0), "CENTER"),
+        ("ALIGN",         (2,0),(2,0), "CENTER"),
+        ("VALIGN",        (0,0),(-1,-1), "TOP"),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("LEFTPADDING",   (0,0),(-1,-1), 4),
+        ("BOX",           (0,0),(0,-1), 0.5, BLACK),
+        ("BOX",           (2,0),(2,-1), 0.5, BLACK),
+        ("INNERGRID",     (0,0),(0,-1), 0.3, LGRAY),
+        ("SPAN",          (2,1),(2,3)),
+    ]))
+    story.append(absen_tbl)
+    story.append(Spacer(1, 6))
+
+    # ══ TANGGAPAN ORANG TUA ═══════════════════════════════════════
+    ortu_data = [
+        [Paragraph("Tanggapan Orang Tua / Wali Murid", sty("th",8,True,TA_CENTER))],
+        [Paragraph(tanggapan_ortu or " ", sty("td",8))],
+    ]
+    ortu_tbl = Table(ortu_data, colWidths=[W], rowHeights=[0.6*cm, 1.8*cm])
+    ortu_tbl.setStyle(TableStyle([
+        ("FONTSIZE",      (0,0),(-1,-1), 8),
+        ("BACKGROUND",    (0,0),(0,0), LGRAY),
+        ("FONTNAME",      (0,0),(0,0), "Helvetica-Bold"),
+        ("ALIGN",         (0,0),(0,0), "CENTER"),
+        ("VALIGN",        (0,0),(-1,-1), "TOP"),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("LEFTPADDING",   (0,1),(0,1), 4),
+        ("BOX",           (0,0),(-1,-1), 0.5, BLACK),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, LGRAY),
+    ]))
+    story.append(ortu_tbl)
+    story.append(Spacer(1, 12))
+
+    # ══ TANDA TANGAN ══════════════════════════════════════════════
+    tgl_str = f"Kota Bekasi, {date.today().strftime('%d %B %Y')}"
+    # Nomor TTD: kiri=ortu, tengah=kepsek, kanan=wali kelas
+    ttd_data = [[
+        Paragraph("Orang Tua Murid", sty("td",8,False,TA_LEFT)),
+        Paragraph(tgl_str, sty("td",8,False,TA_RIGHT)),
+    ],[
+        Paragraph("", sty("td",8)),
+        Paragraph("Wali Kelas", sty("td",8,False,TA_RIGHT)),
+    ]]
+    ttd_top = Table(ttd_data, colWidths=[W/2, W/2])
+    ttd_top.setStyle(TableStyle([
+        ("FONTSIZE", (0,0),(-1,-1), 8),
+        ("VALIGN",   (0,0),(-1,-1), "TOP"),
+        ("TOPPADDING",(0,0),(-1,-1), 0),
+    ]))
+    story.append(ttd_top)
+
+    # Ruang TTD
+    story.append(Spacer(1, 1.8*cm))
+
+    # Nama TTD
+    ttd_nama = Table([[
+        Paragraph("___________________________", sty("td",8,False,TA_LEFT)),
+        Paragraph(f"<b>{nama_wali_kelas.upper() if nama_wali_kelas else '___________________________'}</b>",
+                  sty("td",8,True,TA_RIGHT)),
+    ],[
+        Paragraph("", sty("td",8)),
+        Paragraph(f"NUPTK {nuptk_wali}" if nuptk_wali else "", sty("td",8,False,TA_RIGHT)),
+    ]], colWidths=[W/2, W/2])
+    ttd_nama.setStyle(TableStyle([
+        ("FONTSIZE", (0,0),(-1,-1), 8),
+        ("TOPPADDING",(0,0),(-1,-1), 1),
+    ]))
+    story.append(ttd_nama)
+
+    story.append(Spacer(1, 14))
+
+    # Kepala Sekolah — tengah
+    kepsek_data = [[
+        Paragraph("", sty("td",8)),
+        Paragraph("Kepala Sekolah", sty("td",8,False,TA_CENTER)),
+        Paragraph("", sty("td",8)),
+    ],[
+        Paragraph("", sty("td",8)),
+        Paragraph("", sty("td",8)),
+        Paragraph("", sty("td",8)),
+    ],[
+        Paragraph("", sty("td",8)),
+        Paragraph("", sty("td",8)),
+        Paragraph("", sty("td",8)),
+    ],[
+        Paragraph("", sty("td",8)),
+        Paragraph(f"<b>{nama_kepala.upper()}</b>", sty("td",8,True,TA_CENTER)),
+        Paragraph("", sty("td",8)),
+    ],[
+        Paragraph("", sty("td",8)),
+        Paragraph(f"NUPTK {nuptk_kepala}", sty("td",8,False,TA_CENTER)),
+        Paragraph("", sty("td",8)),
+    ]]
+    kepsek_tbl = Table(kepsek_data, colWidths=[W*0.25, W*0.5, W*0.25],
+                       rowHeights=[0.4*cm, 0.4*cm, 0.4*cm, 0.4*cm, 0.4*cm])
+    kepsek_tbl.setStyle(TableStyle([
+        ("FONTSIZE",    (0,0),(-1,-1), 8),
+        ("VALIGN",      (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",  (0,0),(-1,-1), 1),
+    ]))
+    story.append(kepsek_tbl)
+
+    doc.build(story)
+    return buf.getvalue()
 
 
-# ── STAFF (TU, OB, SECURITY) ──────────────────────────────────────
+def generate_rekap_excel(
+    kelas: str,
+    semester: str,
+    tahun_ajar: str,
+    nilai_df: pd.DataFrame,
+    siswa_list: list,
+) -> bytes:
+    """
+    Generate Excel rekap nilai persis seperti foto:
+    Header: DAFTAR NILAI RAPOR SEMESTER X, KELAS, SD TAMAN HARAPAN
+    Kolom: NO, NAMA SISWA, per-mapel (nilai akhir), JMLH, RT, RANK
+    """
+    buf = BytesIO()
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, GradientFill
+    from openpyxl.utils import get_column_letter
 
-STAFF_LIST = [
-    {"nama": "Hadi Broto",          "jabatan": "TU"},
-    {"nama": "Rudi Kurniawan, ST",  "jabatan": "TU"},
-    {"nama": "Sri Suhartono",       "jabatan": "TU"},
-    {"nama": "Suwarto",             "jabatan": "OB"},
-    {"nama": "Hambali",             "jabatan": "OB"},
-    {"nama": "Suratman",            "jabatan": "OB"},
-    {"nama": "Nurhasanah",          "jabatan": "OB"},
-    {"nama": "Mustakim",            "jabatan": "Security"},
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Rekap {semester}"
+
+    # ── Style helpers ──────────────────────────────────────────────
+    BLUE_FILL   = PatternFill("solid", fgColor="1F4E79")
+    LBLUE_FILL  = PatternFill("solid", fgColor="2E75B6")
+    LLBLUE_FILL = PatternFill("solid", fgColor="BDD7EE")
+    GRAY_FILL   = PatternFill("solid", fgColor="F2F2F2")
+    WHITE_FILL  = PatternFill("solid", fgColor="FFFFFF")
+    ALT_FILL    = PatternFill("solid", fgColor="DEEAF1")
+
+    thin  = Side(style="thin",   color="000000")
+    thick = Side(style="medium", color="000000")
+    bord_all   = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bord_thick = Border(left=thick, right=thick, top=thick, bottom=thick)
+
+    def hdr(cell, text, size=11, bold=True, color="FFFFFF", bg=None, align="center", wrap=False):
+        cell.value = text
+        cell.font  = Font(name="Calibri", size=size, bold=bold, color=color)
+        cell.alignment = Alignment(horizontal=align, vertical="center",
+                                   wrap_text=wrap)
+        cell.border = bord_all
+        if bg: cell.fill = PatternFill("solid", fgColor=bg)
+
+    def dat(cell, value, bold=False, color="000000", align="center", bg=None):
+        cell.value = value
+        cell.font  = Font(name="Calibri", size=10, bold=bold, color=color)
+        cell.alignment = Alignment(horizontal=align, vertical="center")
+        cell.border = bord_all
+        if bg: cell.fill = PatternFill("solid", fgColor=bg)
+
+    # ── Mapel list ─────────────────────────────────────────────────
+    mapel_list = sorted(nilai_df["mapel"].dropna().unique().tolist()) if not nilai_df.empty else []
+    n_mapel    = len(mapel_list)
+
+    # Column layout:
+    # A=NO, B=NAMA SISWA, C...(C+n_mapel-1)=mapel, then JMLH, RT, RANK
+    col_no   = 1
+    col_nama = 2
+    col_mp   = 3
+    col_jmlh = col_mp + n_mapel
+    col_rt   = col_jmlh + 1
+    col_rank = col_rt + 1
+    total_col = col_rank
+
+    # ── Row 1: Judul ───────────────────────────────────────────────
+    sem_label = "1 (SATU)" if "Ganjil" in semester else "2 (DUA)"
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
+    c = ws.cell(1, 1, f"DAFTAR NILAI RAPOR SEMESTER {sem_label}")
+    c.font = Font(name="Calibri", size=14, bold=True, color="000000")
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_col)
+    c2 = ws.cell(2, 1, f"KELAS {kelas.upper()}")
+    c2.font = Font(name="Calibri", size=12, bold=True, color="000000")
+    c2.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 18
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=total_col)
+    c3 = ws.cell(3, 1, f"{NAMA_SEKOLAH} TAHUN AJARAN {tahun_ajar}")
+    c3.font = Font(name="Calibri", size=12, bold=True, color="000000")
+    c3.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[3].height = 18
+
+    # ── Row 4: blank spacer ────────────────────────────────────────
+    ws.row_dimensions[4].height = 6
+
+    # ── Row 5: Header row 1 ────────────────────────────────────────
+    # NO — merge rows 5-6
+    ws.merge_cells(start_row=5, start_column=col_no, end_row=6, end_column=col_no)
+    hdr(ws.cell(5, col_no, "NO"), "NO", size=10, bg="1F4E79")
+
+    # NAMA SISWA — merge rows 5-6
+    ws.merge_cells(start_row=5, start_column=col_nama, end_row=6, end_column=col_nama)
+    hdr(ws.cell(5, col_nama, "NAMA SISWA"), "NAMA SISWA", size=10, bg="1F4E79")
+
+    # MATA PELAJARAN — merge across all mapel cols, rows 5 only
+    if n_mapel > 0:
+        ws.merge_cells(start_row=5, start_column=col_mp, end_row=5, end_column=col_mp+n_mapel-1)
+        hdr(ws.cell(5, col_mp, "MATA PELAJARAN"), "MATA PELAJARAN", size=10, bg="2E75B6")
+
+    # JMLH, RT, RANK — merge rows 5-6
+    for ci, lbl in [(col_jmlh,"JMLH"),(col_rt,"RT"),(col_rank,"RANK")]:
+        ws.merge_cells(start_row=5, start_column=ci, end_row=6, end_column=ci)
+        hdr(ws.cell(5, ci, lbl), lbl, size=10, bg="1F4E79")
+
+    ws.row_dimensions[5].height = 18
+
+    # ── Row 6: Mapel abbreviations ─────────────────────────────────
+    ABBR = {
+        "Pend. Agama & Budi Pekerti":"PABP","Pendidikan Agama":"PABP",
+        "PADB":"PABP","PAI":"PABP",
+        "PPKn":"PANC","Pancasila":"PANC",
+        "Bahasa Indonesia":"BIND","B. Indonesia":"BIND",
+        "Matematika":"MTK",
+        "IPAS":"IPAS","IPA":"IPA","IPS":"IPS",
+        "PJOK":"PJOK",
+        "Seni Budaya":"SBK","SBdP":"SBK","Seni":"SBK",
+        "Bahasa Inggris":"BING","B. Inggris":"BING",
+        "B. Arab":"KKA","Bahasa Arab":"KKA",
+        "TIK":"BJW",
+        "Tahfidh":"MLK2",
+        "Mulok":"MLK3","Muatan Lokal":"MLK3",
+    }
+    for i, mp in enumerate(mapel_list):
+        abbr = ABBR.get(mp, mp[:4].upper())
+        hdr(ws.cell(6, col_mp+i, abbr), abbr, size=9, bg="2E75B6")
+    ws.row_dimensions[6].height = 16
+
+    # ── Row 7: Filter row (like Excel table style) ─────────────────
+    ws.row_dimensions[7].height = 14
+    for ci in range(1, total_col+1):
+        c = ws.cell(7, ci)
+        c.fill = LBLUE_FILL
+        c.border = bord_all
+
+    # Number rows for filter markers
+    for ci, val in [(col_no,1),(col_nama,2)]:
+        dat(ws.cell(7, ci), val, bg="BDD7EE", color="000000")
+    for i in range(n_mapel):
+        dat(ws.cell(7, col_mp+i), col_mp+i, bg="BDD7EE", color="000000")
+    for ci, val in [(col_jmlh,col_jmlh),(col_rt,col_rt),(col_rank,col_rank)]:
+        dat(ws.cell(7, ci), val, bg="BDD7EE", color="000000")
+
+    # ── Data rows ──────────────────────────────────────────────────
+    # Build nilai lookup: siswa_id → {mapel: nilai_akhir}
+    nilai_lookup = {}
+    if not nilai_df.empty:
+        for _, r in nilai_df.iterrows():
+            sid  = r.get("siswa_id")
+            mp   = r.get("mapel","")
+            p    = r.get("pengetahuan")
+            k    = r.get("keterampilan")
+            vals = [v for v in [p,k] if v is not None and not (isinstance(v, float) and pd.isna(v))]
+            na   = round(sum(vals)/len(vals)) if vals else 0
+            if sid not in nilai_lookup: nilai_lookup[sid] = {}
+            nilai_lookup[sid][mp] = na
+
+    # Hitung total per siswa untuk ranking
+    siswa_totals = []
+    for sid, sname in siswa_list:
+        mp_vals = [nilai_lookup.get(sid,{}).get(mp, 0) for mp in mapel_list]
+        total   = sum(mp_vals)
+        rt      = round(total/n_mapel, 2) if n_mapel > 0 else 0
+        siswa_totals.append((sid, sname, mp_vals, total, rt))
+
+    # Ranking berdasarkan total (descending)
+    sorted_by_rank = sorted(siswa_totals, key=lambda x: x[3], reverse=True)
+    rank_map = {}
+    for rank_i, (sid,_,_,_,_) in enumerate(sorted_by_rank, 1):
+        rank_map[sid] = rank_i
+
+    data_start = 8
+    for idx, (sid, sname, mp_vals, total, rt) in enumerate(siswa_totals):
+        row = data_start + idx
+        bg  = "FFFFFF" if idx % 2 == 0 else "DEEAF1"
+
+        dat(ws.cell(row, col_no),   idx+1, bg=bg)
+        dat(ws.cell(row, col_nama), sname, align="left", bg=bg)
+
+        for i, val in enumerate(mp_vals):
+            dat(ws.cell(row, col_mp+i), val if val else 0, bg=bg)
+
+        dat(ws.cell(row, col_jmlh), total, bold=True, bg=bg)
+        dat(ws.cell(row, col_rt),   rt, bold=True, bg=bg)
+        dat(ws.cell(row, col_rank), rank_map[sid], bold=True, bg=bg)
+
+        ws.row_dimensions[row].height = 15
+
+    # ── Column widths ──────────────────────────────────────────────
+    ws.column_dimensions[get_column_letter(col_no)].width   = 4
+    ws.column_dimensions[get_column_letter(col_nama)].width = 28
+    for i in range(n_mapel):
+        ws.column_dimensions[get_column_letter(col_mp+i)].width = 6
+    ws.column_dimensions[get_column_letter(col_jmlh)].width = 7
+    ws.column_dimensions[get_column_letter(col_rt)].width   = 7
+    ws.column_dimensions[get_column_letter(col_rank)].width = 6
+
+    # ── Freeze panes ───────────────────────────────────────────────
+    ws.freeze_panes = ws.cell(data_start, col_mp)
+
+    wb.save(buf)
+    return buf.getvalue()
+
+
+
+def generate_rekap_tp_excel(
+    kelas: str,
+    semester: str,
+    tahun_ajar: str,
+    mapel: str,
+    nilai_df: pd.DataFrame,   # cols: siswa_id, siswa, tp1..tp10, asts, asas, nr, capaian_maksimal
+    siswa_list: list,
+) -> bytes:
+    """
+    Generate Excel rekap nilai TP per mapel — format persis seperti foto:
+    NO | NAMA | TP1..TP10 | ASTS | ASAS | NR | Capaian Maksimal
+    """
+    buf = BytesIO()
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = mapel[:28]
+
+    BLUE  = PatternFill("solid", fgColor="1F4E79")
+    LBLUE = PatternFill("solid", fgColor="2E75B6")
+    LLBLU = PatternFill("solid", fgColor="BDD7EE")
+    thin  = Side(style="thin", color="000000")
+    bord  = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def hdr(cell, text, bg=None, color="FFFFFF", size=10, bold=True, align="center"):
+        cell.value = text
+        cell.font  = Font(name="Calibri", size=size, bold=bold, color=color)
+        cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+        cell.border = bord
+        if bg: cell.fill = PatternFill("solid", fgColor=bg)
+
+    def dat(cell, val, bold=False, color="000000", align="center", bg=None):
+        cell.value = val
+        cell.font  = Font(name="Calibri", size=10, bold=bold, color=color)
+        cell.alignment = Alignment(horizontal=align, vertical="center")
+        cell.border = bord
+        if bg: cell.fill = PatternFill("solid", fgColor=bg)
+
+    sem_label = "1 (SATU)" if "Ganjil" in semester else "2 (DUA)"
+    last_col  = 17  # NO, NAMA, TP1-10, ASTS, ASAS, NR, Capaian = 17 cols
+
+    # ── Title rows ────────────────────────────────────────────────
+    for r, txt, sz in [
+        (1, f"DAFTAR NILAI — {mapel.upper()}", 13),
+        (2, f"SEMESTER {sem_label}  |  KELAS {kelas.upper()}", 11),
+        (3, f"{NAMA_SEKOLAH}  |  TAHUN AJARAN {tahun_ajar}", 11),
+    ]:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=last_col)
+        c = ws.cell(r, 1, txt)
+        c.font = Font(name="Calibri", size=sz, bold=True, color="1F4E79")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[r].height = 18
+
+    ws.row_dimensions[4].height = 6  # spacer
+
+    # ── Header row 5 — merge NO and NAMA across rows 5-6 ─────────
+    for ci, lbl in [(1,"NO"),(2,"NAMA SISWA")]:
+        ws.merge_cells(start_row=5, start_column=ci, end_row=6, end_column=ci)
+        hdr(ws.cell(5, ci, lbl), lbl, bg="1F4E79")
+
+    # TP header merge
+    ws.merge_cells(start_row=5, start_column=3, end_row=5, end_column=12)
+    hdr(ws.cell(5, 3, "TUJUAN PEMBELAJARAN"), "TUJUAN PEMBELAJARAN", bg="2E75B6")
+
+    # ASTS, ASAS, NR — merge rows 5-6
+    for ci, lbl in [(13,"ASTS"),(14,"ASAS"),(15,"NR")]:
+        ws.merge_cells(start_row=5, start_column=ci, end_row=6, end_column=ci)
+        hdr(ws.cell(5, ci, lbl), lbl, bg="1F4E79")
+
+    # Capaian Maksimal — merge rows 5-6
+    ws.merge_cells(start_row=5, start_column=16, end_row=6, end_column=last_col)
+    hdr(ws.cell(5, 16, "Capaian Maksimal"), "Capaian Maksimal", bg="1F4E79")
+
+    # TP1-TP10 header row 6
+    for i in range(10):
+        hdr(ws.cell(6, 3+i, f"TP{i+1}"), f"TP{i+1}", bg="2E75B6", size=9)
+
+    ws.row_dimensions[5].height = 18
+    ws.row_dimensions[6].height = 14
+
+    # Filter row 7
+    for ci in range(1, last_col+1):
+        c = ws.cell(7, ci)
+        c.fill = LLBLU
+        c.border = bord
+        dat(ws.cell(7, ci), ci, bg="BDD7EE", color="1F4E79")
+
+    ws.row_dimensions[7].height = 13
+
+    # Column widths
+    ws.column_dimensions["A"].width = 4
+    ws.column_dimensions["B"].width = 26
+    for i in range(10): ws.column_dimensions[get_column_letter(3+i)].width = 6
+    ws.column_dimensions[get_column_letter(13)].width = 7
+    ws.column_dimensions[get_column_letter(14)].width = 7
+    ws.column_dimensions[get_column_letter(15)].width = 7
+    ws.column_dimensions[get_column_letter(16)].width = 40
+
+    # Build lookup by siswa_id
+    lookup = {}
+    if not nilai_df.empty:
+        for _, r in nilai_df.iterrows():
+            lookup[int(r["siswa_id"])] = r
+
+    # ── Data rows ─────────────────────────────────────────────────
+    data_row = 8
+    for idx, (sid, sname) in enumerate(siswa_list, 1):
+        bg_hex = "FFFFFF" if idx % 2 == 1 else "DEEAF1"
+        bg = PatternFill("solid", fgColor=bg_hex)
+        row = lookup.get(sid, {})
+
+        dat(ws.cell(data_row, 1), idx, bg=bg_hex)
+        dat(ws.cell(data_row, 2), sname, align="left", bg=bg_hex)
+
+        for i, col_key in enumerate(['tp1','tp2','tp3','tp4','tp5','tp6','tp7','tp8','tp9','tp10']):
+            v = row.get(col_key)
+            try: v = int(float(v)) if v is not None and str(v) not in ("","nan","None") else None
+            except: v = None
+            dat(ws.cell(data_row, 3+i), v if v is not None else "", bg=bg_hex)
+
+        for ci, col_key in [(13,'asts'),(14,'asas')]:
+            v = row.get(col_key)
+            try: v = int(float(v)) if v is not None and str(v) not in ("","nan","None") else None
+            except: v = None
+            dat(ws.cell(data_row, ci), v if v is not None else "", bg=bg_hex)
+
+        nr = row.get("nr")
+        try: nr = round(float(nr), 2) if nr is not None and str(nr) not in ("","nan","None") else ""
+        except: nr = ""
+        dat(ws.cell(data_row, 15), nr, bold=True, bg=bg_hex,
+            color="1F4E79" if nr and float(nr) >= 70 else "C0281E" if nr else "000000")
+
+        capaian = row.get("capaian_maksimal", "") or ""
+        dat(ws.cell(data_row, 16), capaian, align="left", bg=bg_hex)
+
+        ws.row_dimensions[data_row].height = 15
+        data_row += 1
+
+    # Footer
+    ws.cell(data_row+1, 1, f"Dicetak: {date.today().strftime('%d/%m/%Y')}").font = \
+        Font(name="Calibri", size=8, color="9AA0B8")
+
+    ws.freeze_panes = ws.cell(8, 3)
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ── CETAK ABSENSI PDF ─────────────────────────────────────────────
+
+def generate_absen_guru_pdf(
+    bulan: int,
+    tahun: int,
+    df_harian: pd.DataFrame,   # cols: nama, kelas, tanggal, status
+    df_rekap:  pd.DataFrame,   # cols: nama, kelas, hadir, alpa, izin, sakit, total_hari
+) -> bytes:
+    """
+    Generate PDF absensi guru per bulan — A4 landscape.
+    Halaman 1: Tabel harian (nama × tanggal).
+    Halaman 2: Rekapitulasi (nama, total H/A/I/S).
+    """
+    import calendar as cal_mod
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import PageBreak
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        leftMargin=1.2*cm, rightMargin=1.2*cm,
+        topMargin=1.2*cm, bottomMargin=1.2*cm
+    )
+
+    nama_bulan = cal_mod.month_name[bulan]
+    jumlah_hari = cal_mod.monthrange(tahun, bulan)[1]
+
+    def sty(name, size=8, bold=False, align=TA_CENTER, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.3, spaceAfter=0, spaceBefore=0)
+
+    W_L = landscape(A4)[0] - 2.4*cm  # usable width landscape
+
+    thin  = colors.HexColor("#cccccc")
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+
+    story = []
+
+    # ── HALAMAN 1: TABEL HARIAN ───────────────────────────────────
+    story.append(Paragraph(f"DAFTAR HADIR GURU — {nama_bulan.upper()} {tahun}", sty("T", 11, True)))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S", 9)))
+    story.append(Spacer(1, 6))
+
+    # Build pivot: nama × tanggal
+    status_map = {}
+    if not df_harian.empty:
+        for _, r in df_harian.iterrows():
+            key = (r.get("nama",""), str(r.get("tanggal","")))
+            status_map[key] = r.get("status","")
+
+    guru_list = df_rekap["nama"].tolist() if not df_rekap.empty else []
+
+    # Column widths: nama(3cm) + kelas(3cm) + 31 hari(0.55cm each)
+    col_w_h = [3*cm, 2.5*cm] + [0.55*cm]*jumlah_hari + [0.7*cm, 0.7*cm, 0.7*cm, 0.7*cm]
+    
+    hdr_row = [
+        Paragraph("Nama Guru", sty("h",7,True,TA_LEFT,colors.white)),
+        Paragraph("Kelas", sty("h",7,True,TA_CENTER,colors.white)),
+    ] + [
+        Paragraph(str(d), sty("h",6,True,TA_CENTER,colors.white))
+        for d in range(1, jumlah_hari+1)
+    ] + [
+        Paragraph("H", sty("h",7,True,TA_CENTER,colors.white)),
+        Paragraph("A", sty("h",7,True,TA_CENTER,colors.white)),
+        Paragraph("I", sty("h",7,True,TA_CENTER,colors.white)),
+        Paragraph("S", sty("h",7,True,TA_CENTER,colors.white)),
+    ]
+
+    rows_h = [hdr_row]
+    for idx, (_, rec) in enumerate(df_rekap.iterrows()):
+        nama  = rec.get("nama","")
+        kelas = str(rec.get("kelas",""))[:12]
+        row   = [
+            Paragraph(nama.split(",")[0][:20], sty("d",6,False,TA_LEFT)),
+            Paragraph(kelas, sty("d",6,False,TA_CENTER)),
+        ]
+        for d in range(1, jumlah_hari+1):
+            tgl_str = f"{tahun}-{str(bulan).zfill(2)}-{str(d).zfill(2)}"
+            st = status_map.get((nama, tgl_str), "")
+            color = {"H":colors.HexColor("#1E6B2E"),"A":colors.HexColor("#C0281E"),
+                     "I":colors.HexColor("#8A6000"),"S":colors.HexColor("#1A4A9A")}.get(st, BLACK)
+            row.append(Paragraph(st, sty("d",6,False,TA_CENTER,color)))
+        row += [
+            Paragraph(str(int(rec.get("hadir",0))),  sty("d",6,True,TA_CENTER,colors.HexColor("#1E6B2E"))),
+            Paragraph(str(int(rec.get("alpa",0))),   sty("d",6,True,TA_CENTER,colors.HexColor("#C0281E"))),
+            Paragraph(str(int(rec.get("izin",0))),   sty("d",6,True,TA_CENTER,colors.HexColor("#8A6000"))),
+            Paragraph(str(int(rec.get("sakit",0))),  sty("d",6,True,TA_CENTER,colors.HexColor("#1A4A9A"))),
+        ]
+        rows_h.append(row)
+
+    tbl_h = Table(rows_h, colWidths=col_w_h, repeatRows=1)
+    tbl_h.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  hdr_c),
+        ("FONTSIZE",      (0,0),(-1,-1), 7),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,-1), 2),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 2),
+        ("BOX",           (0,0),(-1,-1), 0.5, thin),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, thin),
+        *[("BACKGROUND",(0,i),(-1,i), alt_c) for i in range(2,len(rows_h),2)],
+    ]))
+    story.append(tbl_h)
+
+    # ── HALAMAN 2: REKAPITULASI ───────────────────────────────────
+    story.append(PageBreak())
+    story.append(Paragraph(f"REKAPITULASI KEHADIRAN GURU — {nama_bulan.upper()} {tahun}", sty("T2",11,True)))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S2",9)))
+    story.append(Spacer(1, 8))
+
+    rkp_cols = [1*cm, 5*cm, 3*cm, 1.5*cm, 1.5*cm, 1.5*cm, 1.5*cm, 2*cm, 2*cm]
+    rkp_hdr  = [Paragraph(t, sty("rh",8,True,TA_CENTER,colors.white))
+                for t in ["No","Nama Guru","Kelas","Hadir","Alpa","Izin","Sakit","Total Hari","% Hadir"]]
+    rkp_rows = [rkp_hdr]
+    for idx, (_, r) in enumerate(df_rekap.iterrows(), 1):
+        total = r.get("total_hari",0) or 1
+        h     = int(r.get("hadir",0))
+        pct   = f"{h/total*100:.1f}%"
+        rkp_rows.append([
+            Paragraph(str(idx),              sty("rd",8,False,TA_CENTER)),
+            Paragraph(r.get("nama","").split(",")[0], sty("rd",8,False,TA_LEFT)),
+            Paragraph(str(r.get("kelas",""))[:15], sty("rd",8,False,TA_LEFT)),
+            Paragraph(str(h),                sty("rd",8,True,TA_CENTER,colors.HexColor("#1E6B2E"))),
+            Paragraph(str(int(r.get("alpa",0))),  sty("rd",8,True,TA_CENTER,colors.HexColor("#C0281E"))),
+            Paragraph(str(int(r.get("izin",0))),  sty("rd",8,True,TA_CENTER,colors.HexColor("#8A6000"))),
+            Paragraph(str(int(r.get("sakit",0))), sty("rd",8,True,TA_CENTER,colors.HexColor("#1A4A9A"))),
+            Paragraph(str(int(r.get("total_hari",0))), sty("rd",8,False,TA_CENTER)),
+            Paragraph(pct,                   sty("rd",8,False,TA_CENTER)),
+        ])
+
+    rkp_tbl = Table(rkp_rows, colWidths=rkp_cols, repeatRows=1)
+    rkp_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  hdr_c),
+        ("FONTSIZE",      (0,0),(-1,-1), 8),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+        ("BOX",           (0,0),(-1,-1), 0.5, thin),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, thin),
+        *[("BACKGROUND",(0,i),(-1,i), alt_c) for i in range(2,len(rkp_rows),2)],
+    ]))
+    story.append(rkp_tbl)
+
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}", sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_absen_siswa_pdf(
+    kelas: str,
+    bulan: int,
+    tahun: int,
+    df_harian: pd.DataFrame,
+    df_rekap:  pd.DataFrame,
+) -> bytes:
+    """PDF absensi siswa per kelas per bulan — A4 landscape."""
+    import calendar as cal_mod
+    from reportlab.lib.pagesizes import landscape
+    from reportlab.platypus import PageBreak
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=1.2*cm, rightMargin=1.2*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    nama_bulan   = cal_mod.month_name[bulan]
+    jumlah_hari  = cal_mod.monthrange(tahun, bulan)[1]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=8, bold=False, align=TA_CENTER, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.3, spaceAfter=0, spaceBefore=0)
+
+    # Build status map
+    status_map = {}
+    if not df_harian.empty:
+        for _, r in df_harian.iterrows():
+            status_map[(r.get("nama",""), str(r.get("tanggal","")))] = r.get("status","")
+
+    story = []
+
+    # Halaman 1: Harian
+    story.append(Paragraph(f"DAFTAR HADIR SISWA — {kelas.upper()}", sty("T",10,True)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S",9)))
+    story.append(Spacer(1,6))
+
+    col_w = [0.8*cm, 3.5*cm] + [0.52*cm]*jumlah_hari + [0.65*cm]*4
+    hdr   = [Paragraph("No",sty("h",7,True,TA_CENTER,colors.white)),
+             Paragraph("Nama Siswa",sty("h",7,True,TA_LEFT,colors.white))] + \
+            [Paragraph(str(d),sty("h",6,True,TA_CENTER,colors.white)) for d in range(1,jumlah_hari+1)] + \
+            [Paragraph(t,sty("h",7,True,TA_CENTER,colors.white)) for t in ["H","A","I","S"]]
+
+    rows = [hdr]
+    for idx,(_, rec) in enumerate(df_rekap.iterrows(),1):
+        nama = rec.get("nama","")
+        row  = [Paragraph(str(idx),sty("d",6,False,TA_CENTER)),
+                Paragraph(nama[:22],sty("d",6,False,TA_LEFT))]
+        for d in range(1,jumlah_hari+1):
+            tgl = f"{tahun}-{str(bulan).zfill(2)}-{str(d).zfill(2)}"
+            st  = status_map.get((nama,tgl),"")
+            col = {"H":colors.HexColor("#1E6B2E"),"A":colors.HexColor("#C0281E"),
+                   "I":colors.HexColor("#8A6000"),"S":colors.HexColor("#1A4A9A")}.get(st,BLACK)
+            row.append(Paragraph(st,sty("d",6,False,TA_CENTER,col)))
+        row += [Paragraph(str(int(rec.get(k,0))),sty("d",6,True,TA_CENTER)) for k in ["hadir","alpa","izin","sakit"]]
+        rows.append(row)
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+        ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+
+    # Halaman 2: Rekap
+    story.append(PageBreak())
+    story.append(Paragraph(f"REKAPITULASI KEHADIRAN SISWA — {kelas.upper()}", sty("T2",10,True)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S2",9)))
+    story.append(Spacer(1,8))
+
+    rkp_cols = [1*cm,5*cm,1.8*cm,1.8*cm,1.8*cm,1.8*cm,2*cm,2.5*cm]
+    rkp_hdr  = [Paragraph(t,sty("rh",8,True,TA_CENTER,colors.white))
+                for t in ["No","Nama Siswa","Hadir","Alpa","Izin","Sakit","Total Hari","% Hadir"]]
+    rkp_rows = [rkp_hdr]
+    for idx,(_, r) in enumerate(df_rekap.iterrows(),1):
+        total = r.get("total_hari",0) or 1
+        h     = int(r.get("hadir",0))
+        pct   = f"{h/total*100:.1f}%"
+        rkp_rows.append([
+            Paragraph(str(idx),sty("rd",8,False,TA_CENTER)),
+            Paragraph(r.get("nama","")[:25],sty("rd",8,False,TA_LEFT)),
+            Paragraph(str(h),sty("rd",8,True,TA_CENTER,colors.HexColor("#1E6B2E"))),
+            Paragraph(str(int(r.get("alpa",0))),sty("rd",8,True,TA_CENTER,colors.HexColor("#C0281E"))),
+            Paragraph(str(int(r.get("izin",0))),sty("rd",8,True,TA_CENTER,colors.HexColor("#8A6000"))),
+            Paragraph(str(int(r.get("sakit",0))),sty("rd",8,True,TA_CENTER,colors.HexColor("#1A4A9A"))),
+            Paragraph(str(int(r.get("total_hari",0))),sty("rd",8,False,TA_CENTER)),
+            Paragraph(pct,sty("rd",8,False,TA_CENTER)),
+        ])
+
+    rkp_tbl = Table(rkp_rows, colWidths=rkp_cols, repeatRows=1)
+    rkp_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rkp_rows),2)],
+    ]))
+    story.append(rkp_tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                            sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_jurnal_pdf(
+    guru_nama: str,
+    kelas: str,
+    bulan: int,
+    tahun: int,
+    df_jurnal: pd.DataFrame,
+) -> bytes:
+    """PDF jurnal harian guru per bulan — A4 portrait."""
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+    W     = A4[0] - 3*cm
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"JURNAL HARIAN MENGAJAR", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph(f"{guru_nama}", sty("S",10,False,TA_CENTER)))
+    story.append(Paragraph(f"Kelas: {kelas} | {nama_bulan} {tahun} | {NAMA_SEKOLAH}", sty("S2",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [1.2*cm, 2*cm, 2.5*cm, 2.5*cm, 5.5*cm, 3.3*cm]
+    hdr   = [Paragraph(t,sty("h",8,True,TA_CENTER,colors.white))
+             for t in ["No","Tanggal","Mapel","Topik","Aktivitas Pembelajaran","Catatan"]]
+    rows  = [hdr]
+    for idx,(_, j) in enumerate(df_jurnal.iterrows(),1):
+        rows.append([
+            Paragraph(str(idx),sty("d",8,False,TA_CENTER)),
+            Paragraph(str(j.get("tanggal","")),sty("d",8)),
+            Paragraph(str(j.get("mapel","")),sty("d",8)),
+            Paragraph(str(j.get("topik","")),sty("d",8)),
+            Paragraph(str(j.get("aktivitas","")),sty("d",8)),
+            Paragraph(str(j.get("catatan","")),sty("d",8)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),12),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                            sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ── CETAK KEJADIAN PENTING PDF ────────────────────────────────────
+
+def generate_kejadian_pdf(kelas, bulan, tahun, df_kejadian):
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"LAPORAN KEJADIAN PENTING — {kelas.upper()}", sty("T",11,True,TA_CENTER)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [0.7*cm, 2.2*cm, 3.5*cm, 5*cm, 5*cm, 3.5*cm]
+    hdr = [Paragraph(t, sty("h",8,True,TA_CENTER,colors.white))
+           for t in ["No","Tanggal","Nama Siswa","Kejadian","Penanganan","Dicatat Oleh"]]
+    rows = [hdr]
+    for idx,(_, r) in enumerate(df_kejadian.iterrows(), 1):
+        rows.append([
+            Paragraph(str(idx), sty("d",8,False,TA_CENTER)),
+            Paragraph(str(r.get("tanggal","")), sty("d",8)),
+            Paragraph(str(r.get("nama_siswa","")), sty("d",8)),
+            Paragraph(str(r.get("kejadian","")), sty("d",8)),
+            Paragraph(str(r.get("penanganan","")), sty("d",8)),
+            Paragraph(str(r.get("guru_nama","")).split(",")[0], sty("d",8)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),12),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                ParagraphStyle("ft",fontName="Helvetica",fontSize=8,
+                textColor=colors.HexColor("#9aa0b8"),alignment=TA_RIGHT)))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_jurnal_tabel_pdf(kelas, bulan, tahun, df_jurnal):
+    """PDF jurnal dalam format tabel A4 landscape."""
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"JURNAL HARIAN MENGAJAR — {kelas.upper()}", sty("T",11,True,TA_CENTER)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [0.7*cm, 2*cm, 1.5*cm, 2.5*cm, 3*cm, 5.5*cm, 2.5*cm, 2.3*cm]
+    hdr = [Paragraph(t, sty("h",8,True,TA_CENTER,colors.white))
+           for t in ["No","Tanggal","Jam","Mapel","Topik","Aktivitas","Guru","Catatan"]]
+    rows = [hdr]
+    for idx,(_, j) in enumerate(df_jurnal.iterrows(), 1):
+        rows.append([
+            Paragraph(str(idx), sty("d",7,False,TA_CENTER)),
+            Paragraph(str(j.get("tanggal","")), sty("d",7)),
+            Paragraph(str(j.get("jam","") or ""), sty("d",7,False,TA_CENTER)),
+            Paragraph(str(j.get("mapel","")), sty("d",7)),
+            Paragraph(str(j.get("topik","")), sty("d",7)),
+            Paragraph(str(j.get("aktivitas","")), sty("d",7)),
+            Paragraph(str(j.get("guru_nama","") or j.get("guru","")).split(",")[0], sty("d",7)),
+            Paragraph(str(j.get("catatan","") or ""), sty("d",7)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),10),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                ParagraphStyle("ft",fontName="Helvetica",fontSize=8,
+                textColor=colors.HexColor("#9aa0b8"),alignment=TA_RIGHT)))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_agenda_pdf(bulan, tahun, df_agenda):
+    """PDF agenda sekolah per bulan."""
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+    W = A4[0] - 3*cm
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"AGENDA SEKOLAH — {nama_bulan.upper()} {tahun}", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph(NAMA_SEKOLAH, sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [0.7*cm, 2.5*cm, 2.5*cm, 4*cm, 8*cm, 2.3*cm]
+    hdr = [Paragraph(t, sty("h",9,True,TA_CENTER,colors.white))
+           for t in ["No","Tanggal","s/d","Judul","Deskripsi","Kategori"]]
+    rows = [hdr]
+    for idx,(_, ag) in enumerate(df_agenda.iterrows(), 1):
+        rows.append([
+            Paragraph(str(idx), sty("d",8,False,TA_CENTER)),
+            Paragraph(str(ag.get("tanggal","")), sty("d",8)),
+            Paragraph(str(ag.get("tanggal_end","") or ""), sty("d",8)),
+            Paragraph(str(ag.get("judul","")), sty("d",8,True)),
+            Paragraph(str(ag.get("deskripsi","") or ""), sty("d",8)),
+            Paragraph(str(ag.get("kategori","") or ""), sty("d",8,False,TA_CENTER)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),14),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                ParagraphStyle("ft",fontName="Helvetica",fontSize=8,
+                textColor=colors.HexColor("#9aa0b8"),alignment=TA_RIGHT)))
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ── URUTAN DAN KATEGORISASI MAPEL ────────────────────────────────
+
+MUATAN_NASIONAL = [
+    "Pendidikan Agama dan Budi Pekerti",
+    "Pendidikan Pancasila dan Kewarganegaraan",
+    "Bahasa Indonesia",
+    "Matematika",
+    "Ilmu Pengetahuan Alam dan Sosial",
+    "Seni Budaya",
+    "Pendidikan Jasmani Olahraga dan Kesehatan",
+    "Bahasa Inggris",
 ]
 
-CHECKLIST_DEFAULT = [
-    "Menyapu kelas dan teras",
-    "Mengepel kelas dan teras",
-    "Membersihkan kamar mandi dan kloset",
-    "Membersihkan wastafel",
-    "Menyalakan lampu dan AC pagi/sebelum kegiatan belajar",
-    "Mematikan lampu dan AC setelah kegiatan belajar",
-    "Mencuci tempat/bak sampah",
-    "Membersihkan saluran air",
-    "Merapikan taman",
+MUATAN_NASIONAL_FASE_A = [  # Kelas 1-2, tanpa IPAS
+    "Pendidikan Agama dan Budi Pekerti",
+    "Pendidikan Pancasila dan Kewarganegaraan",
+    "Bahasa Indonesia",
+    "Matematika",
+    "Seni Budaya",
+    "Pendidikan Jasmani Olahraga dan Kesehatan",
+    "Bahasa Inggris",
 ]
 
-def init_staff_tables():
-    conn = get_conn()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS staff (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nama TEXT NOT NULL UNIQUE,
-            jabatan TEXT NOT NULL,
-            status TEXT DEFAULT 'Aktif'
-        );
-        CREATE TABLE IF NOT EXISTS absen_staff (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            staff_id INTEGER REFERENCES staff(id),
-            tanggal TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT '?',
-            keterangan TEXT DEFAULT '',
-            UNIQUE(staff_id, tanggal)
-        );
-        CREATE TABLE IF NOT EXISTS checklist_ob (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            staff_id INTEGER REFERENCES staff(id),
-            tanggal TEXT NOT NULL,
-            item TEXT NOT NULL,
-            selesai INTEGER DEFAULT 0,
-            urutan INTEGER DEFAULT 0,
-            UNIQUE(staff_id, tanggal, item)
-        );
-        CREATE TABLE IF NOT EXISTS agenda_staff (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            staff_id INTEGER REFERENCES staff(id),
-            tanggal TEXT NOT NULL,
-            tugas TEXT NOT NULL,
-            selesai INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now','localtime'))
-        );
-    """)
-    conn.commit()
-    conn.close()
+MUATAN_SEKOLAH_REGULER = [
+    "Bahasa Sunda",
+    "Bahasa Arab",
+    "Tahfidzul Quran",
+    "Teknologi Informasi dan Komunikasi",
+]
 
-def seed_staff():
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("staff").select("id").limit(1).execute()
-            if not res.data:
-                for s in STAFF_LIST:
-                    sb.table("staff").insert(s).execute()
-            return
-        except Exception: pass
-    try:
-        conn = get_conn()
-        count = conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0]
-        if count == 0:
-            for s in STAFF_LIST:
-                conn.execute("INSERT OR IGNORE INTO staff (nama, jabatan) VALUES (?,?)", (s["nama"], s["jabatan"]))
-            conn.commit()
-        conn.close()
-    except Exception: pass
+MUATAN_SEKOLAH_BILINGUAL = [
+    "Bahasa Sunda",
+    "Bahasa Arab",
+    "Tahfidzul Quran",
+    "Teknologi Informasi dan Komunikasi",
+    "Math",
+    "Science",
+    "English Practice",
+]
 
-def get_all_staff():
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("staff").select("*").eq("status","Aktif").order("jabatan").execute()
-            return pd.DataFrame(res.data or [])
-        except Exception: pass
-    try:
-        conn = get_conn()
-        df = pd.read_sql("SELECT * FROM staff WHERE status='Aktif' ORDER BY jabatan, nama", conn)
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
+FASE_A_KELAS = ["I", "II", "1", "2"]  # Kelas 1 dan 2
 
-def get_staff_by_nama(nama):
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("staff").select("*").eq("nama", nama).limit(1).execute()
-            return res.data[0] if res.data else None
-        except Exception: pass
-    try:
-        conn = get_conn()
-        row = conn.execute("SELECT * FROM staff WHERE nama=?", (nama,)).fetchone()
-        conn.close()
-        return dict(row) if row else None
-    except Exception:
-        return None
-
-def upsert_absen_staff(staff_id, tanggal, status, keterangan=""):
-    data = {"staff_id":staff_id,"tanggal":str(tanggal),"status":status,"keterangan":keterangan}
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("absen_staff").upsert(data, on_conflict="staff_id,tanggal").execute()
-            return
-        except Exception as e: print(f"upsert_absen_staff: {e}")
-    try:
-        conn = get_conn()
-        conn.execute("INSERT INTO absen_staff (staff_id,tanggal,status,keterangan) VALUES (?,?,?,?) ON CONFLICT(staff_id,tanggal) DO UPDATE SET status=excluded.status, keterangan=excluded.keterangan",
-            (staff_id, str(tanggal), status, keterangan))
-        conn.commit(); conn.close()
-    except Exception: pass
-
-def get_absen_staff_hari(staff_id, tanggal):
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("absen_staff").select("status,keterangan").eq("staff_id",staff_id).eq("tanggal",str(tanggal)).limit(1).execute()
-            return res.data[0] if res.data else None
-        except Exception: pass
-    try:
-        conn = get_conn()
-        row = conn.execute("SELECT status, keterangan FROM absen_staff WHERE staff_id=? AND tanggal=?", (staff_id, str(tanggal))).fetchone()
-        conn.close()
-        return dict(row) if row else None
-    except Exception:
-        return None
-
-def get_absen_staff_rekap(bulan, tahun):
-    bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-    sb = get_sb()
-    if sb:
-        try:
-            s_res = sb.table("staff").select("id,nama,jabatan").eq("status","Aktif").execute()
-            staff_list = s_res.data or []
-            a_res = sb.table("absen_staff").select("staff_id,status").like("tanggal", f"{bulan_str}%").execute()
-            absen_map = {}
-            for a in (a_res.data or []):
-                sid = a["staff_id"]
-                if sid not in absen_map:
-                    absen_map[sid] = {"H":0,"A":0,"I":0,"S":0,"total":0}
-                if a["status"] in absen_map[sid]:
-                    absen_map[sid][a["status"]] += 1
-                absen_map[sid]["total"] += 1
-            rows = []
-            for s in staff_list:
-                m = absen_map.get(s["id"], {"H":0,"A":0,"I":0,"S":0,"total":0})
-                rows.append({"nama":s["nama"],"jabatan":s["jabatan"],"hadir":m["H"],"alpa":m["A"],"izin":m["I"],"sakit":m["S"],"total_hari":m["total"]})
-            return pd.DataFrame(rows)
-        except Exception: pass
-    try:
-        conn = get_conn()
-        df = pd.read_sql("""
-            SELECT s.nama, s.jabatan,
-                SUM(CASE WHEN a.status='H' THEN 1 ELSE 0 END) as hadir,
-                SUM(CASE WHEN a.status='A' THEN 1 ELSE 0 END) as alpa,
-                SUM(CASE WHEN a.status='I' THEN 1 ELSE 0 END) as izin,
-                SUM(CASE WHEN a.status='S' THEN 1 ELSE 0 END) as sakit,
-                COUNT(a.id) as total_hari
-            FROM staff s LEFT JOIN absen_staff a ON a.staff_id=s.id AND a.tanggal LIKE ?
-            WHERE s.status='Aktif' GROUP BY s.id ORDER BY s.jabatan, s.nama
-        """, conn, params=[f"{bulan_str}%"])
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-def get_checklist_ob(staff_id, tanggal):
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("checklist_ob").select("*").eq("staff_id",staff_id).eq("tanggal",str(tanggal)).order("urutan").execute()
-            return res.data or []
-        except Exception: pass
-    try:
-        conn = get_conn()
-        rows = conn.execute("SELECT * FROM checklist_ob WHERE staff_id=? AND tanggal=? ORDER BY urutan", (staff_id, str(tanggal))).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-    except Exception:
-        return []
-
-def init_checklist_hari(staff_id, tanggal):
-    """Inisialisasi checklist default untuk hari ini jika belum ada."""
-    existing = get_checklist_ob(staff_id, tanggal)
-    if existing:
-        return
-    sb = get_sb()
-    if sb:
-        try:
-            for i, item in enumerate(CHECKLIST_DEFAULT):
-                sb.table("checklist_ob").insert({"staff_id":staff_id,"tanggal":str(tanggal),"item":item,"selesai":0,"urutan":i}).execute()
-            return
-        except Exception: pass
-    try:
-        conn = get_conn()
-        for i, item in enumerate(CHECKLIST_DEFAULT):
-            conn.execute("INSERT OR IGNORE INTO checklist_ob (staff_id,tanggal,item,selesai,urutan) VALUES (?,?,?,0,?)",
-                (staff_id, str(tanggal), item, i))
-        conn.commit(); conn.close()
-    except Exception: pass
-
-def update_checklist_item(checklist_id, selesai):
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("checklist_ob").update({"selesai": 1 if selesai else 0}).eq("id", checklist_id).execute()
-            return
-        except Exception: pass
-    try:
-        conn = get_conn()
-        conn.execute("UPDATE checklist_ob SET selesai=? WHERE id=?", (1 if selesai else 0, checklist_id))
-        conn.commit(); conn.close()
-    except Exception: pass
-
-def tambah_checklist_item(staff_id, tanggal, item):
-    existing = get_checklist_ob(staff_id, tanggal)
-    urutan = len(existing)
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("checklist_ob").insert({"staff_id":staff_id,"tanggal":str(tanggal),"item":item,"selesai":0,"urutan":urutan}).execute()
-            return
-        except Exception: pass
-    try:
-        conn = get_conn()
-        conn.execute("INSERT OR IGNORE INTO checklist_ob (staff_id,tanggal,item,selesai,urutan) VALUES (?,?,?,0,?)",
-            (staff_id, str(tanggal), item, urutan))
-        conn.commit(); conn.close()
-    except Exception: pass
-
-def get_agenda_staff(staff_id, tanggal):
-    sb = get_sb()
-    if sb:
-        try:
-            res = sb.table("agenda_staff").select("*").eq("staff_id",staff_id).eq("tanggal",str(tanggal)).order("created_at").execute()
-            return res.data or []
-        except Exception: pass
-    try:
-        conn = get_conn()
-        rows = conn.execute("SELECT * FROM agenda_staff WHERE staff_id=? AND tanggal=? ORDER BY created_at", (staff_id, str(tanggal))).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-    except Exception:
-        return []
-
-def tambah_agenda_staff(staff_id, tanggal, tugas):
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("agenda_staff").insert({"staff_id":staff_id,"tanggal":str(tanggal),"tugas":tugas,"selesai":0}).execute()
-            return
-        except Exception: pass
-    try:
-        conn = get_conn()
-        conn.execute("INSERT INTO agenda_staff (staff_id,tanggal,tugas,selesai) VALUES (?,?,?,0)",
-            (staff_id, str(tanggal), tugas))
-        conn.commit(); conn.close()
-    except Exception: pass
-
-def update_agenda_staff(agenda_id, selesai):
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("agenda_staff").update({"selesai": 1 if selesai else 0}).eq("id", agenda_id).execute()
-            return
-        except Exception: pass
-    try:
-        conn = get_conn()
-        conn.execute("UPDATE agenda_staff SET selesai=? WHERE id=?", (1 if selesai else 0, agenda_id))
-        conn.commit(); conn.close()
-    except Exception: pass
-
-def get_checklist_summary_hari(tanggal):
-    """Summary checklist semua OB untuk kepsek."""
-    sb = get_sb()
-    if sb:
-        try:
-            s_res = sb.table("staff").select("id,nama,jabatan").eq("jabatan","OB").eq("status","Aktif").execute()
-            rows = []
-            for s in (s_res.data or []):
-                c_res = sb.table("checklist_ob").select("selesai").eq("staff_id",s["id"]).eq("tanggal",str(tanggal)).execute()
-                items = c_res.data or []
-                total = len(items)
-                done  = sum(1 for i in items if i["selesai"])
-                rows.append({"nama":s["nama"],"total":total,"selesai":done,"pct":f"{int(done/total*100)}%" if total else "0%"})
-            return rows
-        except Exception: pass
-    try:
-        conn = get_conn()
-        rows = conn.execute("""
-            SELECT s.nama, COUNT(c.id) as total, SUM(c.selesai) as selesai
-            FROM staff s LEFT JOIN checklist_ob c ON c.staff_id=s.id AND c.tanggal=?
-            WHERE s.jabatan='OB' AND s.status='Aktif' GROUP BY s.id
-        """, (str(tanggal),)).fetchall()
-        conn.close()
-        return [{"nama":r["nama"],"total":r["total"],"selesai":r["selesai"] or 0,
-                 "pct":f"{int((r['selesai'] or 0)/r['total']*100)}%" if r["total"] else "0%"} for r in rows]
-    except Exception:
-        return []
-
-
-# ── HAPUS SISWA & GURU ────────────────────────────────────────────
-
-def hapus_siswa(siswa_id):
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("siswa").delete().eq("id", siswa_id).execute()
+def is_fase_a(kelas: str) -> bool:
+    """Return True jika kelas 1 atau 2."""
+    for k in FASE_A_KELAS:
+        if kelas.startswith(k + " ") or kelas == k:
             return True
-        except Exception as e:
-            print(f"hapus_siswa: {e}")
-    try:
-        conn = get_conn()
-        conn.execute("DELETE FROM siswa WHERE id=?", (siswa_id,))
-        conn.commit(); conn.close()
-        return True
-    except Exception:
-        return False
+    return False
 
-def hapus_guru(guru_id):
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("guru").update({"status": "Tidak Aktif"}).eq("id", guru_id).execute()
-            return True
-        except Exception as e:
-            print(f"hapus_guru: {e}")
-    try:
-        conn = get_conn()
-        conn.execute("UPDATE guru SET status='Tidak Aktif' WHERE id=?", (guru_id,))
-        conn.commit(); conn.close()
-        return True
-    except Exception:
-        return False
+def is_bilingual(kelas: str) -> bool:
+    """Return True jika kelas bilingual."""
+    return "bilingual" in kelas.lower() or "Bilingual" in kelas
 
-# ── KEJADIAN PENTING ──────────────────────────────────────────────
-
-def init_kejadian_table():
-    conn = get_conn()
-    try:
-        conn.execute("""CREATE TABLE IF NOT EXISTS kejadian_penting (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guru_id INTEGER REFERENCES guru(id),
-            kelas TEXT NOT NULL,
-            tanggal TEXT NOT NULL,
-            nama_siswa TEXT NOT NULL,
-            kejadian TEXT NOT NULL,
-            penanganan TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now','localtime'))
-        )""")
-        conn.commit()
-    except Exception: pass
-    conn.close()
-
-def tambah_kejadian(guru_id, kelas, tanggal, nama_siswa, kejadian, penanganan):
-    data = {"guru_id":guru_id,"kelas":kelas,"tanggal":str(tanggal),
-            "nama_siswa":nama_siswa,"kejadian":kejadian,"penanganan":penanganan}
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("kejadian_penting").insert(data).execute()
-            return True
-        except Exception as e:
-            print(f"tambah_kejadian: {e}")
-    try:
-        conn = get_conn()
-        conn.execute("""INSERT INTO kejadian_penting
-            (guru_id,kelas,tanggal,nama_siswa,kejadian,penanganan)
-            VALUES (?,?,?,?,?,?)""",
-            (guru_id,kelas,str(tanggal),nama_siswa,kejadian,penanganan))
-        conn.commit(); conn.close()
-        return True
-    except Exception:
-        return False
-
-def get_kejadian_guru(guru_id, kelas, bulan=None, tahun=None):
-    sb = get_sb()
-    if sb:
-        try:
-            q = sb.table("kejadian_penting").select("*").eq("guru_id",guru_id).eq("kelas",kelas)
-            if bulan and tahun:
-                bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-                q = q.like("tanggal", f"{bulan_str}%")
-            res = q.order("tanggal").execute()
-            return pd.DataFrame(res.data or [])
-        except Exception: pass
-    try:
-        conn = get_conn()
-        if bulan and tahun:
-            bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-            df = pd.read_sql("""SELECT * FROM kejadian_penting
-                WHERE guru_id=? AND kelas=? AND tanggal LIKE ?
-                ORDER BY tanggal""", conn, params=[guru_id, kelas, f"{bulan_str}%"])
+def sortir_mapel(mapel_list: list, kelas: str) -> tuple:
+    """
+    Return (nasional, sekolah) — dua list mapel terurut.
+    nasional: mapel muatan nasional sesuai urutan standar
+    sekolah: mapel muatan sekolah sesuai urutan standar
+    """
+    fase_a = is_fase_a(kelas)
+    bilingual = is_bilingual(kelas)
+    
+    urutan_nasional = MUATAN_NASIONAL_FASE_A if fase_a else MUATAN_NASIONAL
+    urutan_sekolah  = MUATAN_SEKOLAH_BILINGUAL if bilingual else MUATAN_SEKOLAH_REGULER
+    
+    # Set nama muatan nasional (lowercase untuk matching)
+    set_nasional = {m.lower() for m in urutan_nasional}
+    
+    nasional = []
+    sekolah  = []
+    lainnya_n = []  # mapel nasional tidak dikenal
+    lainnya_s = []  # mapel sekolah tidak dikenal
+    
+    for mp in mapel_list:
+        if mp.lower() in set_nasional:
+            nasional.append(mp)
         else:
-            df = pd.read_sql("""SELECT * FROM kejadian_penting
-                WHERE guru_id=? AND kelas=? ORDER BY tanggal DESC LIMIT 50""",
-                conn, params=[guru_id, kelas])
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
+            sekolah.append(mp)
+    
+    # Urutkan sesuai daftar standar
+    def sort_key_nasional(mp):
+        for i, std in enumerate(urutan_nasional):
+            if mp.lower() == std.lower():
+                return i
+        return 999
+    
+    def sort_key_sekolah(mp):
+        for i, std in enumerate(urutan_sekolah):
+            if mp.lower() == std.lower():
+                return i
+        return 999
+    
+    nasional.sort(key=sort_key_nasional)
+    sekolah.sort(key=sort_key_sekolah)
+    
+    return nasional, sekolah
 
-def get_semua_kejadian(bulan=None, tahun=None):
-    """Untuk monitoring kepsek."""
-    sb = get_sb()
-    if sb:
-        try:
-            q = sb.table("kejadian_penting").select("*,guru(nama)")
-            if bulan and tahun:
-                bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-                q = q.like("tanggal", f"{bulan_str}%")
-            res = q.order("tanggal", desc=True).execute()
-            rows = []
-            for r in (res.data or []):
-                r["guru_nama"] = r.get("guru",{}).get("nama","") if isinstance(r.get("guru"),dict) else ""
-                rows.append(r)
-            return pd.DataFrame(rows)
-        except Exception: pass
-    try:
-        conn = get_conn()
-        if bulan and tahun:
-            bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
-            df = pd.read_sql("""SELECT k.*, g.nama as guru_nama FROM kejadian_penting k
-                JOIN guru g ON g.id=k.guru_id
-                WHERE k.tanggal LIKE ? ORDER BY k.tanggal DESC""",
-                conn, params=[f"{bulan_str}%"])
-        else:
-            df = pd.read_sql("""SELECT k.*, g.nama as guru_nama FROM kejadian_penting k
-                JOIN guru g ON g.id=k.guru_id ORDER BY k.tanggal DESC LIMIT 100""", conn)
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
 
-def hapus_kejadian(kejadian_id):
-    sb = get_sb()
-    if sb:
-        try:
-            sb.table("kejadian_penting").delete().eq("id", kejadian_id).execute()
-            return True
-        except Exception: pass
-    try:
-        conn = get_conn()
-        conn.execute("DELETE FROM kejadian_penting WHERE id=?", (kejadian_id,))
-        conn.commit(); conn.close()
-        return True
-    except Exception:
-        return False
+def generate_rapor_nasional_pdf(siswa_info, kelas, semester, tahun_ajar,
+                                 df_nilai_nasional, catatan, absen_count,
+                                 guru_nama, guru_nuptk, ekskul_list=[]):
+    """Generate rapor PDF Muatan Nasional."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+    W     = A4[0] - 3*cm
+
+    def sty(name, size=10, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+
+    # Header
+    story.append(Paragraph("LAPORAN HASIL BELAJAR MURID (RAPOR)", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph("MUATAN NASIONAL", sty("T2",10,True,TA_CENTER,colors.HexColor("#1F4E79"))))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    # Info siswa
+    story.append(Table([
+        [Paragraph("Nama",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(siswa_info.get("nama",""),sty("l",9)),
+         Paragraph("Kelas",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(kelas,sty("l",9))],
+        [Paragraph("NIS",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nis","")),sty("l",9)),
+         Paragraph("Semester",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(semester,sty("l",9))],
+        [Paragraph("NISN",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nisn","")),sty("l",9)),
+         Paragraph("Tahun Ajaran",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(tahun_ajar,sty("l",9))],
+        [Paragraph("Fase",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("fase","")),sty("l",9)),
+         Paragraph("",""), Paragraph("",""), Paragraph("","")],
+    ], colWidths=[2.5*cm,0.4*cm,5*cm,2.8*cm,0.4*cm,5*cm]))
+    story.append(Spacer(1,8))
+
+    # Tabel nilai
+    story.append(Paragraph("A. Muatan Nasional", sty("h2",10,True)))
+    story.append(Spacer(1,4))
+
+    col_w = [0.7*cm, 5.5*cm, 1.8*cm, 8*cm]
+    hdr = [Paragraph(t,sty("h",9,True,TA_CENTER,colors.white))
+           for t in ["No","Mata Pelajaran","Nilai Akhir","Capaian Kompetensi"]]
+    rows = [hdr]
+    for idx, (_, r) in enumerate(df_nilai_nasional.iterrows(), 1):
+        nr = r.get("nr") or r.get("pengetahuan")
+        pred = get_predikat(float(nr)) if nr else "-"
+        cap = r.get("capaian") or r.get("capaian_maksimal") or ""
+        if not cap and nr:
+            cap = CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"]).format(mapel=r.get("mapel",""))
+        rows.append([
+            Paragraph(str(idx),sty("d",9,False,TA_CENTER)),
+            Paragraph(str(r.get("mapel","")),sty("d",9)),
+            Paragraph(f"{float(nr):.0f} ({PREDIKAT_LABEL.get(pred,pred)})" if nr else "-",sty("d",9,False,TA_CENTER)),
+            Paragraph(str(cap),sty("d",9)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),14),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,10))
+
+    # Ketidakhadiran
+    story.append(Paragraph("B. Ketidakhadiran", sty("h2",10,True)))
+    story.append(Spacer(1,4))
+    ah_tbl = Table([
+        [Paragraph("Sakit",sty("d",9)), Paragraph(f"{absen_count.get('S',0)} hari",sty("d",9)),
+         Paragraph("Izin",sty("d",9)), Paragraph(f"{absen_count.get('I',0)} hari",sty("d",9)),
+         Paragraph("Tanpa Keterangan",sty("d",9)), Paragraph(f"{absen_count.get('A',0)} hari",sty("d",9))],
+    ], colWidths=[2*cm,2*cm,1.5*cm,2*cm,3.5*cm,2*cm])
+    story.append(ah_tbl)
+    story.append(Spacer(1,10))
+
+    # Catatan
+    if catatan.get("catatan_wali"):
+        story.append(Paragraph("C. Catatan Wali Kelas", sty("h2",10,True)))
+        story.append(Paragraph(catatan["catatan_wali"], sty("cn",9)))
+        story.append(Spacer(1,8))
+
+    # TTD
+    story.append(Spacer(1,12))
+    ttd = Table([
+        [Paragraph("Orang Tua/Wali",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("td",9)),
+         Paragraph("Wali Kelas",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("td",9)),
+         Paragraph("Kepala Sekolah",sty("td",9,False,TA_CENTER))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty(""))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty(""))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty(""))],
+        [Paragraph("( _________________ )",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("")),
+         Paragraph(f"( {guru_nama.split(',')[0]} )",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("")),
+         Paragraph(f"( {KEPSEK_NAMA.split(',')[0]} )",sty("td",9,False,TA_CENTER))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),
+         Paragraph(f"NUPTK: {guru_nuptk}",sty("td",8,False,TA_CENTER)),
+         Paragraph("",sty("")),
+         Paragraph(f"NUPTK: {KEPSEK_NUPTK}",sty("td",8,False,TA_CENTER))],
+    ], colWidths=[4*cm,0.5*cm,4*cm,0.5*cm,4*cm])
+    story.append(ttd)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_rapor_sekolah_pdf(siswa_info, kelas, semester, tahun_ajar,
+                                df_nilai_sekolah, ekskul_list=[]):
+    """Generate rapor PDF Muatan Sekolah."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    hdr_c = colors.HexColor("#1a5c3a")
+    alt_c = colors.HexColor("#f0fdf4")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=10, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+
+    story.append(Paragraph("LAPORAN HASIL BELAJAR MURID (RAPOR)", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph("MUATAN SEKOLAH", sty("T2",10,True,TA_CENTER,colors.HexColor("#1a5c3a"))))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    # Info siswa
+    story.append(Table([
+        [Paragraph("Nama",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(siswa_info.get("nama",""),sty("l",9)),
+         Paragraph("Kelas",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(kelas,sty("l",9))],
+        [Paragraph("NIS",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nis","")),sty("l",9)),
+         Paragraph("Semester",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(semester,sty("l",9))],
+        [Paragraph("NISN",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nisn","")),sty("l",9)),
+         Paragraph("Tahun Ajaran",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(tahun_ajar,sty("l",9))],
+    ], colWidths=[2.5*cm,0.4*cm,5*cm,2.8*cm,0.4*cm,5*cm]))
+    story.append(Spacer(1,8))
+
+    # Tabel nilai muatan sekolah
+    story.append(Paragraph("A. Muatan Sekolah", sty("h2",10,True)))
+    story.append(Spacer(1,4))
+
+    col_w = [0.7*cm, 5.5*cm, 1.8*cm, 8*cm]
+    hdr = [Paragraph(t,sty("h",9,True,TA_CENTER,colors.white))
+           for t in ["No","Mata Pelajaran","Nilai Akhir","Capaian Kompetensi"]]
+    rows = [hdr]
+    for idx, (_, r) in enumerate(df_nilai_sekolah.iterrows(), 1):
+        nr = r.get("nr") or r.get("pengetahuan")
+        pred = get_predikat(float(nr)) if nr else "-"
+        cap = r.get("capaian") or r.get("capaian_maksimal") or ""
+        if not cap and nr:
+            cap = CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"]).format(mapel=r.get("mapel",""))
+        rows.append([
+            Paragraph(str(idx),sty("d",9,False,TA_CENTER)),
+            Paragraph(str(r.get("mapel","")),sty("d",9)),
+            Paragraph(f"{float(nr):.0f} ({PREDIKAT_LABEL.get(pred,pred)})" if nr else "-",sty("d",9,False,TA_CENTER)),
+            Paragraph(str(cap),sty("d",9)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),14),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+
+    # Ekskul
+    if ekskul_list:
+        story.append(Spacer(1,10))
+        story.append(Paragraph("B. Ekstrakurikuler", sty("h2",10,True)))
+        story.append(Spacer(1,4))
+        eks_rows = [[Paragraph("No",sty("h",9,True,TA_CENTER,colors.white)),
+                     Paragraph("Kegiatan",sty("h",9,True,TA_CENTER,colors.white)),
+                     Paragraph("Keterangan",sty("h",9,True,TA_CENTER,colors.white))]]
+        for i, ek in enumerate(ekskul_list, 1):
+            eks_rows.append([
+                Paragraph(str(i),sty("d",9,False,TA_CENTER)),
+                Paragraph(ek.get("nama_ekskul",""),sty("d",9)),
+                Paragraph(ek.get("keterangan",""),sty("d",9)),
+            ])
+        eks_tbl = Table(eks_rows, colWidths=[1*cm,5*cm,10*cm])
+        eks_tbl.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),hdr_c),
+            ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+            ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        ]))
+        story.append(eks_tbl)
+
+    doc.build(story)
+    return buf.getvalue()
