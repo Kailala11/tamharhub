@@ -1567,3 +1567,152 @@ def get_checklist_summary_hari(tanggal):
                  "pct":f"{int((r['selesai'] or 0)/r['total']*100)}%" if r["total"] else "0%"} for r in rows]
     except Exception:
         return []
+
+
+# ── HAPUS SISWA & GURU ────────────────────────────────────────────
+
+def hapus_siswa(siswa_id):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("siswa").delete().eq("id", siswa_id).execute()
+            return True
+        except Exception as e:
+            print(f"hapus_siswa: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("DELETE FROM siswa WHERE id=?", (siswa_id,))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        return False
+
+def hapus_guru(guru_id):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("guru").update({"status": "Tidak Aktif"}).eq("id", guru_id).execute()
+            return True
+        except Exception as e:
+            print(f"hapus_guru: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE guru SET status='Tidak Aktif' WHERE id=?", (guru_id,))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        return False
+
+# ── KEJADIAN PENTING ──────────────────────────────────────────────
+
+def init_kejadian_table():
+    conn = get_conn()
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS kejadian_penting (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guru_id INTEGER REFERENCES guru(id),
+            kelas TEXT NOT NULL,
+            tanggal TEXT NOT NULL,
+            nama_siswa TEXT NOT NULL,
+            kejadian TEXT NOT NULL,
+            penanganan TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )""")
+        conn.commit()
+    except Exception: pass
+    conn.close()
+
+def tambah_kejadian(guru_id, kelas, tanggal, nama_siswa, kejadian, penanganan):
+    data = {"guru_id":guru_id,"kelas":kelas,"tanggal":str(tanggal),
+            "nama_siswa":nama_siswa,"kejadian":kejadian,"penanganan":penanganan}
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("kejadian_penting").insert(data).execute()
+            return True
+        except Exception as e:
+            print(f"tambah_kejadian: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("""INSERT INTO kejadian_penting
+            (guru_id,kelas,tanggal,nama_siswa,kejadian,penanganan)
+            VALUES (?,?,?,?,?,?)""",
+            (guru_id,kelas,str(tanggal),nama_siswa,kejadian,penanganan))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_kejadian_guru(guru_id, kelas, bulan=None, tahun=None):
+    sb = get_sb()
+    if sb:
+        try:
+            q = sb.table("kejadian_penting").select("*").eq("guru_id",guru_id).eq("kelas",kelas)
+            if bulan and tahun:
+                bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
+                q = q.like("tanggal", f"{bulan_str}%")
+            res = q.order("tanggal").execute()
+            return pd.DataFrame(res.data or [])
+        except Exception: pass
+    try:
+        conn = get_conn()
+        if bulan and tahun:
+            bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
+            df = pd.read_sql("""SELECT * FROM kejadian_penting
+                WHERE guru_id=? AND kelas=? AND tanggal LIKE ?
+                ORDER BY tanggal""", conn, params=[guru_id, kelas, f"{bulan_str}%"])
+        else:
+            df = pd.read_sql("""SELECT * FROM kejadian_penting
+                WHERE guru_id=? AND kelas=? ORDER BY tanggal DESC LIMIT 50""",
+                conn, params=[guru_id, kelas])
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_semua_kejadian(bulan=None, tahun=None):
+    """Untuk monitoring kepsek."""
+    sb = get_sb()
+    if sb:
+        try:
+            q = sb.table("kejadian_penting").select("*,guru(nama)")
+            if bulan and tahun:
+                bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
+                q = q.like("tanggal", f"{bulan_str}%")
+            res = q.order("tanggal", desc=True).execute()
+            rows = []
+            for r in (res.data or []):
+                r["guru_nama"] = r.get("guru",{}).get("nama","") if isinstance(r.get("guru"),dict) else ""
+                rows.append(r)
+            return pd.DataFrame(rows)
+        except Exception: pass
+    try:
+        conn = get_conn()
+        if bulan and tahun:
+            bulan_str = f"{tahun}-{str(bulan).zfill(2)}"
+            df = pd.read_sql("""SELECT k.*, g.nama as guru_nama FROM kejadian_penting k
+                JOIN guru g ON g.id=k.guru_id
+                WHERE k.tanggal LIKE ? ORDER BY k.tanggal DESC""",
+                conn, params=[f"{bulan_str}%"])
+        else:
+            df = pd.read_sql("""SELECT k.*, g.nama as guru_nama FROM kejadian_penting k
+                JOIN guru g ON g.id=k.guru_id ORDER BY k.tanggal DESC LIMIT 100""", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def hapus_kejadian(kejadian_id):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("kejadian_penting").delete().eq("id", kejadian_id).execute()
+            return True
+        except Exception: pass
+    try:
+        conn = get_conn()
+        conn.execute("DELETE FROM kejadian_penting WHERE id=?", (kejadian_id,))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        return False

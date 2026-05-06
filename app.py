@@ -6,7 +6,10 @@ import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
 import calendar
-from rapor import generate_rapor_pdf, generate_rekap_excel, generate_rekap_tp_excel, generate_absen_guru_pdf, generate_absen_siswa_pdf, generate_jurnal_pdf
+from rapor import (generate_rapor_pdf, generate_rekap_excel, generate_rekap_tp_excel,
+    generate_absen_guru_pdf, generate_absen_siswa_pdf, generate_jurnal_pdf,
+    generate_kejadian_pdf, generate_jurnal_tabel_pdf, generate_agenda_pdf,
+    generate_rapor_nasional_pdf, generate_rapor_sekolah_pdf, sortir_mapel)
 from ui_helpers import LOGO_B64
 from ui_helpers import (
     CSS, masthead, kpi_card, alrt, jurnal_card, agenda_card,
@@ -39,6 +42,8 @@ from database import (
     get_checklist_ob, init_checklist_hari, update_checklist_item, tambah_checklist_item,
     get_agenda_staff, tambah_agenda_staff, update_agenda_staff,
     get_checklist_summary_hari,
+    hapus_siswa, hapus_guru,
+    init_kejadian_table, tambah_kejadian, get_kejadian_guru, get_semua_kejadian, hapus_kejadian,
     init_topik_tp_table, upsert_topik_tp, get_topik_tp,
     get_conn,
     upload_file_storage, list_files_storage, download_file_storage, delete_file_storage,
@@ -199,8 +204,8 @@ THN_LIST  = ["2024/2025","2025/2026","2026/2027"]
 # KEPALA SEKOLAH
 # ══════════════════════════════════════════════════════════════════
 if role == "kepsek":
-    tab_ring, tab_absen, tab_jurnal, tab_agenda_ks, tab_nilai_ks, tab_rekap, tab_data = st.tabs([
-        "Ringkasan", "Kehadiran", "Jurnal Guru", "Agenda", "Nilai Siswa", "Rekap Bulanan", "Data Sekolah"
+    tab_ring, tab_absen, tab_jurnal, tab_agenda_ks, tab_nilai_ks, tab_rekap, tab_kj_ks, tab_data = st.tabs([
+        "Ringkasan", "Kehadiran", "Jurnal Guru", "Agenda", "Nilai Siswa", "Rekap Bulanan", "Kejadian Penting", "Data Sekolah"
     ])
 
     with tab_ring:
@@ -291,6 +296,30 @@ if role == "kepsek":
                 st.markdown(jurnal_card(j), unsafe_allow_html=True)
 
     with tab_agenda_ks:
+        with st.expander("Cetak Agenda PDF per Bulan"):
+            ag1, ag2 = st.columns(2)
+            with ag1:
+                bln_agks = st.selectbox("Bulan:", list(range(1,13)), index=date.today().month-1,
+                    format_func=lambda m: __import__('calendar').month_name[m], key="bln_agks")
+            with ag2:
+                thn_agks = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_agks")
+            if st.button("Download PDF Agenda", use_container_width=True, key="btn_pdf_agks"):
+                import calendar as _cal
+                bln_str_ag = f"{thn_agks}-{str(bln_agks).zfill(2)}"
+                df_ag_all = get_agenda_semua()
+                if not df_ag_all.empty:
+                    df_ag_all["bln_"] = df_ag_all["tanggal"].str[:7]
+                    df_ag_bln = df_ag_all[df_ag_all["bln_"]==bln_str_ag]
+                else:
+                    df_ag_bln = pd.DataFrame()
+                if df_ag_bln.empty:
+                    st.warning(f"Belum ada agenda untuk {_cal.month_name[bln_agks]} {thn_agks}.")
+                else:
+                    pdf_ag = generate_agenda_pdf(bln_agks, thn_agks, df_ag_bln)
+                    st.download_button("Unduh PDF", data=pdf_ag,
+                        file_name=f"agenda_{bln_agks}_{thn_agks}.pdf",
+                        mime="application/pdf", use_container_width=True)
+        st.markdown("---")
         with st.expander("Tambah agenda baru", expanded=False):
             with st.form("form_ag_ks"):
                 judul = st.text_input("Judul agenda:", placeholder="Contoh: Upacara Bendera")
@@ -408,6 +437,30 @@ if role == "kepsek":
                         st.download_button("Unduh PDF", data=pdf_as,
                             file_name=f"absensi_siswa_{kls_rs.replace(' ','_')}_{bln}_{thn}.pdf",
                             mime="application/pdf", use_container_width=True, key="dl_pdf_as")
+
+    with tab_kj_ks:
+        st.markdown("**Monitoring Kejadian Penting**")
+        kj_f1, kj_f2 = st.columns(2)
+        with kj_f1:
+            bln_kjks = st.selectbox("Bulan:", list(range(1,13)), index=date.today().month-1,
+                format_func=lambda m: __import__('calendar').month_name[m], key="bln_kjks")
+        with kj_f2:
+            thn_kjks = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_kjks")
+        df_kjks = get_semua_kejadian(bln_kjks, thn_kjks)
+        if df_kjks.empty:
+            st.info("Belum ada kejadian yang dicatat.")
+        else:
+            st.caption(f"{len(df_kjks)} kejadian ditemukan")
+            cols_show = [c for c in ["tanggal","kelas","nama_siswa","kejadian","penanganan","guru_nama"] if c in df_kjks.columns]
+            st.dataframe(df_kjks[cols_show].rename(
+                columns={"tanggal":"Tanggal","kelas":"Kelas","nama_siswa":"Nama Siswa",
+                         "kejadian":"Kejadian","penanganan":"Penanganan","guru_nama":"Guru"}),
+                use_container_width=True, hide_index=True)
+            if st.button("Download PDF Kejadian", use_container_width=True, key="btn_pdf_kj_ks"):
+                pdf_kjks = generate_kejadian_pdf("Semua Kelas", bln_kjks, thn_kjks, df_kjks)
+                st.download_button("Unduh PDF", data=pdf_kjks,
+                    file_name=f"kejadian_semua_{bln_kjks}_{thn_kjks}.pdf",
+                    mime="application/pdf", use_container_width=True)
 
     with tab_data:
         # Program Mengajar view for kepsek
@@ -780,21 +833,49 @@ elif role == "guru":
                         absen_ct     = get_absen_count_siswa(ss_id, sem_n, thn_n)
                         df_sl        = get_siswa_by_kelas_lengkap(kelas_nilai)
                         s_row        = df_sl[df_sl["id"]==ss_id].iloc[0] if (not df_sl.empty and ss_id in df_sl["id"].values) else None
-                        pdf = generate_rapor_pdf(
-                            nama_siswa=ss, kelas=kelas_nilai, semester=sem_n,
-                            tahun_ajar=thn_n, nilai_df=df_nr,
-                            nama_wali_kelas=guru_info["nama"], nuptk_wali=get_nuptk(guru_id),
-                            fase=s_row["fase"] if s_row is not None else "",
-                            nis=s_row["nis"] if s_row is not None else "",
-                            nisn=s_row["nisn"] if s_row is not None else "",
-                            alamat_siswa=s_row["alamat"] if s_row is not None else "",
-                            ekskul_df=df_ekskul, absen_count=absen_ct,
-                            catatan_wali=catatan_data.get("catatan_wali",""),
-                            tanggapan_ortu=catatan_data.get("tanggapan_ortu",""),
-                        )
-                        st.download_button(f"Unduh Rapor {ss}", data=pdf,
-                            file_name=f"rapor_{ss.replace(' ','_')}_{sem_n}.pdf",
-                            mime="application/pdf", use_container_width=True)
+                        # Sortir mapel nasional vs sekolah
+                        all_mapel_r = df_nr["mapel"].tolist() if not df_nr.empty else []
+                        mapel_nas, mapel_sek = sortir_mapel(all_mapel_r, kelas_nilai)
+                        df_nr_nas = df_nr[df_nr["mapel"].isin(mapel_nas)].copy() if not df_nr.empty else df_nr
+                        df_nr_sek = df_nr[df_nr["mapel"].isin(mapel_sek)].copy() if not df_nr.empty else df_nr
+                        if not df_nr_nas.empty:
+                            df_nr_nas["_ord"] = df_nr_nas["mapel"].apply(lambda m: mapel_nas.index(m) if m in mapel_nas else 999)
+                            df_nr_nas = df_nr_nas.sort_values("_ord")
+                        if not df_nr_sek.empty:
+                            df_nr_sek["_ord"] = df_nr_sek["mapel"].apply(lambda m: mapel_sek.index(m) if m in mapel_sek else 999)
+                            df_nr_sek = df_nr_sek.sort_values("_ord")
+
+                        siswa_rec_r = {"nama":ss,"nis":s_row["nis"] if s_row is not None else "","nisn":s_row["nisn"] if s_row is not None else "","fase":s_row["fase"] if s_row is not None else "","alamat":s_row["alamat"] if s_row is not None else ""}
+                        catatan_rec_r = catatan_data
+                        ekskul_rows_r = df_ekskul.to_dict("records") if not df_ekskul.empty else []
+                        nuptk_r = get_nuptk(guru_id)
+
+                        rb1, rb2 = st.columns(2)
+                        with rb1:
+                            if not df_nr_nas.empty:
+                                pdf_nas = generate_rapor_nasional_pdf(
+                                    siswa_rec_r, kelas_nilai, sem_n, thn_n,
+                                    df_nr_nas, catatan_rec_r, absen_ct,
+                                    guru_info["nama"], nuptk_r
+                                )
+                                st.download_button(f"📥 Rapor Nasional — {ss}", data=pdf_nas,
+                                    file_name=f"rapor_nasional_{ss.replace(' ','_')}_{sem_n}.pdf",
+                                    mime="application/pdf", use_container_width=True,
+                                    key=f"dl_rapor_nas_{ss}")
+                            else:
+                                st.info("Belum ada nilai muatan nasional.")
+                        with rb2:
+                            if not df_nr_sek.empty:
+                                pdf_sek = generate_rapor_sekolah_pdf(
+                                    siswa_rec_r, kelas_nilai, sem_n, thn_n,
+                                    df_nr_sek, ekskul_rows_r
+                                )
+                                st.download_button(f"📥 Rapor Sekolah — {ss}", data=pdf_sek,
+                                    file_name=f"rapor_sekolah_{ss.replace(' ','_')}_{sem_n}.pdf",
+                                    mime="application/pdf", use_container_width=True,
+                                    key=f"dl_rapor_sek_{ss}")
+                            else:
+                                st.info("Belum ada nilai muatan sekolah.")
 
                 with cr2:
                     st.markdown("*Rekap nilai TP per mapel (Excel)*")
@@ -841,7 +922,7 @@ elif role == "guru":
             with c1:
                 tgl_j = st.date_input("Tanggal:", value=date.today(), key="_ukey9")
                 mp_j  = st.selectbox("Mata pelajaran:", mapel_list if mapel_list else ["—"], key="_ukey10")
-                jam_j = st.selectbox("Jam Pelajaran:", [f"Jam ke-{i}" for i in range(1,11)], key="jam_pjg")
+                jam_j = st.text_input("Jam (contoh: 08.00 - 09.30):", placeholder="08.00 - 09.30", key="jam_pjg")
             with c2:
                 if is_bidstudi:
                     kls_j = st.selectbox("Kelas yang diajar:", get_semua_kelas(), key="jg_kelas_sel_guru")
@@ -857,6 +938,57 @@ elif role == "guru":
                 else:
                     simpan_jurnal(guru_id, str(tgl_j), kls_j, mp_j, f"[{jam_j}] {topik}" if topik else topik, akt, media, ctt)
                     st.success("Jurnal berhasil disimpan. Kepala sekolah dan wali murid dapat melihatnya.")
+
+        # ── Kejadian Penting ──────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Kejadian Penting:**")
+        with st.expander("Catat Kejadian Penting", expanded=False):
+            kj1, kj2 = st.columns(2)
+            with kj1:
+                tgl_kj = st.date_input("Tanggal kejadian:", value=date.today(), key="tgl_kejadian")
+                nama_kj = st.text_input("Nama siswa:", placeholder="Nama lengkap siswa", key="nama_kj")
+            with kj2:
+                kjd = st.text_area("Kejadian:", placeholder="Deskripsikan kejadian...", height=80, key="kjd_text")
+                pnk = st.text_area("Penanganan:", placeholder="Tindakan yang diambil...", height=80, key="pnk_text")
+            if st.button("Simpan Kejadian", use_container_width=True, key="btn_simpan_kj"):
+                if nama_kj.strip() and kjd.strip():
+                    tambah_kejadian(guru_id, kelas_guru, tgl_kj, nama_kj.strip(), kjd.strip(), pnk.strip())
+                    st.success("Kejadian berhasil dicatat.")
+                    st.rerun()
+                else:
+                    st.warning("Nama siswa dan kejadian wajib diisi.")
+
+        # Riwayat dan cetak kejadian
+        df_kj = get_kejadian_guru(guru_id, kelas_guru)
+        if not df_kj.empty:
+            st.caption(f"{len(df_kj)} kejadian tercatat")
+            for _, kj in df_kj.head(10).iterrows():
+                ck1, ck2 = st.columns([5,1])
+                with ck1:
+                    st.markdown(f"**{kj.get('tanggal','')}** — {kj.get('nama_siswa','')}: {kj.get('kejadian','')[:60]}...")
+                with ck2:
+                    if st.button("Hapus", key=f"del_kj_{kj['id']}"):
+                        hapus_kejadian(int(kj['id']))
+                        st.rerun()
+
+            st.markdown("**Cetak PDF Kejadian per Bulan:**")
+            bkj1, bkj2 = st.columns(2)
+            with bkj1:
+                bln_kj = st.selectbox("Bulan:", list(range(1,13)), index=date.today().month-1,
+                    format_func=lambda m: __import__('calendar').month_name[m], key="bln_kj")
+            with bkj2:
+                thn_kj = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_kj")
+            if st.button("Download PDF Kejadian", use_container_width=True, key="btn_pdf_kj"):
+                import calendar as _cal
+                df_kj_bln = get_kejadian_guru(guru_id, kelas_guru, bln_kj, thn_kj)
+                if df_kj_bln.empty:
+                    st.warning(f"Belum ada kejadian untuk {_cal.month_name[bln_kj]} {thn_kj}.")
+                else:
+                    df_kj_bln["guru_nama"] = guru_info["nama"]
+                    pdf_kj = generate_kejadian_pdf(kelas_guru, bln_kj, thn_kj, df_kj_bln)
+                    st.download_button("Unduh PDF", data=pdf_kj,
+                        file_name=f"kejadian_{kelas_guru.replace(' ','_')}_{bln_kj}_{thn_kj}.pdf",
+                        mime="application/pdf", use_container_width=True)
 
         # Upload RPP Harian
         st.markdown("---")

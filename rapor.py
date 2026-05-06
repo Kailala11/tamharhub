@@ -1126,3 +1126,473 @@ def generate_jurnal_pdf(
                             sty("ft",8,False,TA_RIGHT,colors.HexColor("#9aa0b8"))))
     doc.build(story)
     return buf.getvalue()
+
+
+# ── CETAK KEJADIAN PENTING PDF ────────────────────────────────────
+
+def generate_kejadian_pdf(kelas, bulan, tahun, df_kejadian):
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"LAPORAN KEJADIAN PENTING — {kelas.upper()}", sty("T",11,True,TA_CENTER)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [0.7*cm, 2.2*cm, 3.5*cm, 5*cm, 5*cm, 3.5*cm]
+    hdr = [Paragraph(t, sty("h",8,True,TA_CENTER,colors.white))
+           for t in ["No","Tanggal","Nama Siswa","Kejadian","Penanganan","Dicatat Oleh"]]
+    rows = [hdr]
+    for idx,(_, r) in enumerate(df_kejadian.iterrows(), 1):
+        rows.append([
+            Paragraph(str(idx), sty("d",8,False,TA_CENTER)),
+            Paragraph(str(r.get("tanggal","")), sty("d",8)),
+            Paragraph(str(r.get("nama_siswa","")), sty("d",8)),
+            Paragraph(str(r.get("kejadian","")), sty("d",8)),
+            Paragraph(str(r.get("penanganan","")), sty("d",8)),
+            Paragraph(str(r.get("guru_nama","")).split(",")[0], sty("d",8)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),12),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                ParagraphStyle("ft",fontName="Helvetica",fontSize=8,
+                textColor=colors.HexColor("#9aa0b8"),alignment=TA_RIGHT)))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_jurnal_tabel_pdf(kelas, bulan, tahun, df_jurnal):
+    """PDF jurnal dalam format tabel A4 landscape."""
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"JURNAL HARIAN MENGAJAR — {kelas.upper()}", sty("T",11,True,TA_CENTER)))
+    story.append(Paragraph(f"{nama_bulan.upper()} {tahun} | {NAMA_SEKOLAH}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [0.7*cm, 2*cm, 1.5*cm, 2.5*cm, 3*cm, 5.5*cm, 2.5*cm, 2.3*cm]
+    hdr = [Paragraph(t, sty("h",8,True,TA_CENTER,colors.white))
+           for t in ["No","Tanggal","Jam","Mapel","Topik","Aktivitas","Guru","Catatan"]]
+    rows = [hdr]
+    for idx,(_, j) in enumerate(df_jurnal.iterrows(), 1):
+        rows.append([
+            Paragraph(str(idx), sty("d",7,False,TA_CENTER)),
+            Paragraph(str(j.get("tanggal","")), sty("d",7)),
+            Paragraph(str(j.get("jam","") or ""), sty("d",7,False,TA_CENTER)),
+            Paragraph(str(j.get("mapel","")), sty("d",7)),
+            Paragraph(str(j.get("topik","")), sty("d",7)),
+            Paragraph(str(j.get("aktivitas","")), sty("d",7)),
+            Paragraph(str(j.get("guru_nama","") or j.get("guru","")).split(",")[0], sty("d",7)),
+            Paragraph(str(j.get("catatan","") or ""), sty("d",7)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),10),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                ParagraphStyle("ft",fontName="Helvetica",fontSize=8,
+                textColor=colors.HexColor("#9aa0b8"),alignment=TA_RIGHT)))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_agenda_pdf(bulan, tahun, df_agenda):
+    """PDF agenda sekolah per bulan."""
+    import calendar as cal_mod
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    nama_bulan = cal_mod.month_name[bulan]
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+    W = A4[0] - 3*cm
+
+    def sty(name, size=9, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+    story.append(Paragraph(f"AGENDA SEKOLAH — {nama_bulan.upper()} {tahun}", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph(NAMA_SEKOLAH, sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    col_w = [0.7*cm, 2.5*cm, 2.5*cm, 4*cm, 8*cm, 2.3*cm]
+    hdr = [Paragraph(t, sty("h",9,True,TA_CENTER,colors.white))
+           for t in ["No","Tanggal","s/d","Judul","Deskripsi","Kategori"]]
+    rows = [hdr]
+    for idx,(_, ag) in enumerate(df_agenda.iterrows(), 1):
+        rows.append([
+            Paragraph(str(idx), sty("d",8,False,TA_CENTER)),
+            Paragraph(str(ag.get("tanggal","")), sty("d",8)),
+            Paragraph(str(ag.get("tanggal_end","") or ""), sty("d",8)),
+            Paragraph(str(ag.get("judul","")), sty("d",8,True)),
+            Paragraph(str(ag.get("deskripsi","") or ""), sty("d",8)),
+            Paragraph(str(ag.get("kategori","") or ""), sty("d",8,False,TA_CENTER)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),14),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,12))
+    story.append(Paragraph(f"Dicetak: {date.today().strftime('%d %B %Y')}",
+                ParagraphStyle("ft",fontName="Helvetica",fontSize=8,
+                textColor=colors.HexColor("#9aa0b8"),alignment=TA_RIGHT)))
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ── URUTAN DAN KATEGORISASI MAPEL ────────────────────────────────
+
+MUATAN_NASIONAL = [
+    "Pendidikan Agama dan Budi Pekerti",
+    "Pendidikan Pancasila dan Kewarganegaraan",
+    "Bahasa Indonesia",
+    "Matematika",
+    "Ilmu Pengetahuan Alam dan Sosial",
+    "Seni Budaya",
+    "Pendidikan Jasmani Olahraga dan Kesehatan",
+    "Bahasa Inggris",
+]
+
+MUATAN_NASIONAL_FASE_A = [  # Kelas 1-2, tanpa IPAS
+    "Pendidikan Agama dan Budi Pekerti",
+    "Pendidikan Pancasila dan Kewarganegaraan",
+    "Bahasa Indonesia",
+    "Matematika",
+    "Seni Budaya",
+    "Pendidikan Jasmani Olahraga dan Kesehatan",
+    "Bahasa Inggris",
+]
+
+MUATAN_SEKOLAH_REGULER = [
+    "Bahasa Sunda",
+    "Bahasa Arab",
+    "Tahfidzul Quran",
+    "Teknologi Informasi dan Komunikasi",
+]
+
+MUATAN_SEKOLAH_BILINGUAL = [
+    "Bahasa Sunda",
+    "Bahasa Arab",
+    "Tahfidzul Quran",
+    "Teknologi Informasi dan Komunikasi",
+    "Math",
+    "Science",
+    "English Practice",
+]
+
+FASE_A_KELAS = ["I", "II", "1", "2"]  # Kelas 1 dan 2
+
+def is_fase_a(kelas: str) -> bool:
+    """Return True jika kelas 1 atau 2."""
+    for k in FASE_A_KELAS:
+        if kelas.startswith(k + " ") or kelas == k:
+            return True
+    return False
+
+def is_bilingual(kelas: str) -> bool:
+    """Return True jika kelas bilingual."""
+    return "bilingual" in kelas.lower() or "Bilingual" in kelas
+
+def sortir_mapel(mapel_list: list, kelas: str) -> tuple:
+    """
+    Return (nasional, sekolah) — dua list mapel terurut.
+    nasional: mapel muatan nasional sesuai urutan standar
+    sekolah: mapel muatan sekolah sesuai urutan standar
+    """
+    fase_a = is_fase_a(kelas)
+    bilingual = is_bilingual(kelas)
+    
+    urutan_nasional = MUATAN_NASIONAL_FASE_A if fase_a else MUATAN_NASIONAL
+    urutan_sekolah  = MUATAN_SEKOLAH_BILINGUAL if bilingual else MUATAN_SEKOLAH_REGULER
+    
+    # Set nama muatan nasional (lowercase untuk matching)
+    set_nasional = {m.lower() for m in urutan_nasional}
+    
+    nasional = []
+    sekolah  = []
+    lainnya_n = []  # mapel nasional tidak dikenal
+    lainnya_s = []  # mapel sekolah tidak dikenal
+    
+    for mp in mapel_list:
+        if mp.lower() in set_nasional:
+            nasional.append(mp)
+        else:
+            sekolah.append(mp)
+    
+    # Urutkan sesuai daftar standar
+    def sort_key_nasional(mp):
+        for i, std in enumerate(urutan_nasional):
+            if mp.lower() == std.lower():
+                return i
+        return 999
+    
+    def sort_key_sekolah(mp):
+        for i, std in enumerate(urutan_sekolah):
+            if mp.lower() == std.lower():
+                return i
+        return 999
+    
+    nasional.sort(key=sort_key_nasional)
+    sekolah.sort(key=sort_key_sekolah)
+    
+    return nasional, sekolah
+
+
+def generate_rapor_nasional_pdf(siswa_info, kelas, semester, tahun_ajar,
+                                 df_nilai_nasional, catatan, absen_count,
+                                 guru_nama, guru_nuptk, ekskul_list=[]):
+    """Generate rapor PDF Muatan Nasional."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    hdr_c = colors.HexColor("#1F4E79")
+    alt_c = colors.HexColor("#EBF5FB")
+    thin  = colors.HexColor("#cccccc")
+    W     = A4[0] - 3*cm
+
+    def sty(name, size=10, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+
+    # Header
+    story.append(Paragraph("LAPORAN HASIL BELAJAR MURID (RAPOR)", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph("MUATAN NASIONAL", sty("T2",10,True,TA_CENTER,colors.HexColor("#1F4E79"))))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    # Info siswa
+    story.append(Table([
+        [Paragraph("Nama",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(siswa_info.get("nama",""),sty("l",9)),
+         Paragraph("Kelas",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(kelas,sty("l",9))],
+        [Paragraph("NIS",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nis","")),sty("l",9)),
+         Paragraph("Semester",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(semester,sty("l",9))],
+        [Paragraph("NISN",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nisn","")),sty("l",9)),
+         Paragraph("Tahun Ajaran",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(tahun_ajar,sty("l",9))],
+        [Paragraph("Fase",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("fase","")),sty("l",9)),
+         Paragraph("",""), Paragraph("",""), Paragraph("","")],
+    ], colWidths=[2.5*cm,0.4*cm,5*cm,2.8*cm,0.4*cm,5*cm]))
+    story.append(Spacer(1,8))
+
+    # Tabel nilai
+    story.append(Paragraph("A. Muatan Nasional", sty("h2",10,True)))
+    story.append(Spacer(1,4))
+
+    col_w = [0.7*cm, 5.5*cm, 1.8*cm, 8*cm]
+    hdr = [Paragraph(t,sty("h",9,True,TA_CENTER,colors.white))
+           for t in ["No","Mata Pelajaran","Nilai Akhir","Capaian Kompetensi"]]
+    rows = [hdr]
+    for idx, (_, r) in enumerate(df_nilai_nasional.iterrows(), 1):
+        nr = r.get("nr") or r.get("pengetahuan")
+        pred = get_predikat(float(nr)) if nr else "-"
+        cap = r.get("capaian") or r.get("capaian_maksimal") or ""
+        if not cap and nr:
+            cap = CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"]).format(mapel=r.get("mapel",""))
+        rows.append([
+            Paragraph(str(idx),sty("d",9,False,TA_CENTER)),
+            Paragraph(str(r.get("mapel","")),sty("d",9)),
+            Paragraph(f"{float(nr):.0f} ({PREDIKAT_LABEL.get(pred,pred)})" if nr else "-",sty("d",9,False,TA_CENTER)),
+            Paragraph(str(cap),sty("d",9)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),14),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1,10))
+
+    # Ketidakhadiran
+    story.append(Paragraph("B. Ketidakhadiran", sty("h2",10,True)))
+    story.append(Spacer(1,4))
+    ah_tbl = Table([
+        [Paragraph("Sakit",sty("d",9)), Paragraph(f"{absen_count.get('S',0)} hari",sty("d",9)),
+         Paragraph("Izin",sty("d",9)), Paragraph(f"{absen_count.get('I',0)} hari",sty("d",9)),
+         Paragraph("Tanpa Keterangan",sty("d",9)), Paragraph(f"{absen_count.get('A',0)} hari",sty("d",9))],
+    ], colWidths=[2*cm,2*cm,1.5*cm,2*cm,3.5*cm,2*cm])
+    story.append(ah_tbl)
+    story.append(Spacer(1,10))
+
+    # Catatan
+    if catatan.get("catatan_wali"):
+        story.append(Paragraph("C. Catatan Wali Kelas", sty("h2",10,True)))
+        story.append(Paragraph(catatan["catatan_wali"], sty("cn",9)))
+        story.append(Spacer(1,8))
+
+    # TTD
+    story.append(Spacer(1,12))
+    ttd = Table([
+        [Paragraph("Orang Tua/Wali",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("td",9)),
+         Paragraph("Wali Kelas",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("td",9)),
+         Paragraph("Kepala Sekolah",sty("td",9,False,TA_CENTER))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty(""))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty(""))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty("")),Paragraph("",sty(""))],
+        [Paragraph("( _________________ )",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("")),
+         Paragraph(f"( {guru_nama.split(',')[0]} )",sty("td",9,False,TA_CENTER)),
+         Paragraph("",sty("")),
+         Paragraph(f"( {KEPSEK_NAMA.split(',')[0]} )",sty("td",9,False,TA_CENTER))],
+        [Paragraph("",sty("")),Paragraph("",sty("")),
+         Paragraph(f"NUPTK: {guru_nuptk}",sty("td",8,False,TA_CENTER)),
+         Paragraph("",sty("")),
+         Paragraph(f"NUPTK: {KEPSEK_NUPTK}",sty("td",8,False,TA_CENTER))],
+    ], colWidths=[4*cm,0.5*cm,4*cm,0.5*cm,4*cm])
+    story.append(ttd)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def generate_rapor_sekolah_pdf(siswa_info, kelas, semester, tahun_ajar,
+                                df_nilai_sekolah, ekskul_list=[]):
+    """Generate rapor PDF Muatan Sekolah."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+
+    hdr_c = colors.HexColor("#1a5c3a")
+    alt_c = colors.HexColor("#f0fdf4")
+    thin  = colors.HexColor("#cccccc")
+
+    def sty(name, size=10, bold=False, align=TA_LEFT, color=BLACK):
+        return ParagraphStyle(name, fontName="Helvetica-Bold" if bold else "Helvetica",
+                              fontSize=size, textColor=color, alignment=align,
+                              leading=size*1.4, spaceAfter=0, spaceBefore=0)
+
+    story = []
+
+    story.append(Paragraph("LAPORAN HASIL BELAJAR MURID (RAPOR)", sty("T",12,True,TA_CENTER)))
+    story.append(Paragraph("MUATAN SEKOLAH", sty("T2",10,True,TA_CENTER,colors.HexColor("#1a5c3a"))))
+    story.append(Paragraph(f"{NAMA_SEKOLAH} | NPSN {NPSN}", sty("S",9,False,TA_CENTER)))
+    story.append(Spacer(1,8))
+
+    # Info siswa
+    story.append(Table([
+        [Paragraph("Nama",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(siswa_info.get("nama",""),sty("l",9)),
+         Paragraph("Kelas",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(kelas,sty("l",9))],
+        [Paragraph("NIS",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nis","")),sty("l",9)),
+         Paragraph("Semester",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(semester,sty("l",9))],
+        [Paragraph("NISN",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(str(siswa_info.get("nisn","")),sty("l",9)),
+         Paragraph("Tahun Ajaran",sty("l",9,True)), Paragraph(":",sty("l",9)), Paragraph(tahun_ajar,sty("l",9))],
+    ], colWidths=[2.5*cm,0.4*cm,5*cm,2.8*cm,0.4*cm,5*cm]))
+    story.append(Spacer(1,8))
+
+    # Tabel nilai muatan sekolah
+    story.append(Paragraph("A. Muatan Sekolah", sty("h2",10,True)))
+    story.append(Spacer(1,4))
+
+    col_w = [0.7*cm, 5.5*cm, 1.8*cm, 8*cm]
+    hdr = [Paragraph(t,sty("h",9,True,TA_CENTER,colors.white))
+           for t in ["No","Mata Pelajaran","Nilai Akhir","Capaian Kompetensi"]]
+    rows = [hdr]
+    for idx, (_, r) in enumerate(df_nilai_sekolah.iterrows(), 1):
+        nr = r.get("nr") or r.get("pengetahuan")
+        pred = get_predikat(float(nr)) if nr else "-"
+        cap = r.get("capaian") or r.get("capaian_maksimal") or ""
+        if not cap and nr:
+            cap = CAPAIAN_TEMPLATE.get(pred, CAPAIAN_TEMPLATE["C"]).format(mapel=r.get("mapel",""))
+        rows.append([
+            Paragraph(str(idx),sty("d",9,False,TA_CENTER)),
+            Paragraph(str(r.get("mapel","")),sty("d",9)),
+            Paragraph(f"{float(nr):.0f} ({PREDIKAT_LABEL.get(pred,pred)})" if nr else "-",sty("d",9,False,TA_CENTER)),
+            Paragraph(str(cap),sty("d",9)),
+        ])
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_c),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),14),
+        ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        *[("BACKGROUND",(0,i),(-1,i),alt_c) for i in range(2,len(rows),2)],
+    ]))
+    story.append(tbl)
+
+    # Ekskul
+    if ekskul_list:
+        story.append(Spacer(1,10))
+        story.append(Paragraph("B. Ekstrakurikuler", sty("h2",10,True)))
+        story.append(Spacer(1,4))
+        eks_rows = [[Paragraph("No",sty("h",9,True,TA_CENTER,colors.white)),
+                     Paragraph("Kegiatan",sty("h",9,True,TA_CENTER,colors.white)),
+                     Paragraph("Keterangan",sty("h",9,True,TA_CENTER,colors.white))]]
+        for i, ek in enumerate(ekskul_list, 1):
+            eks_rows.append([
+                Paragraph(str(i),sty("d",9,False,TA_CENTER)),
+                Paragraph(ek.get("nama_ekskul",""),sty("d",9)),
+                Paragraph(ek.get("keterangan",""),sty("d",9)),
+            ])
+        eks_tbl = Table(eks_rows, colWidths=[1*cm,5*cm,10*cm])
+        eks_tbl.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),hdr_c),
+            ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+            ("BOX",(0,0),(-1,-1),0.5,thin),("INNERGRID",(0,0),(-1,-1),0.3,thin),
+        ]))
+        story.append(eks_tbl)
+
+    doc.build(story)
+    return buf.getvalue()
