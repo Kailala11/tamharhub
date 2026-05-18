@@ -1716,3 +1716,121 @@ def hapus_kejadian(kejadian_id):
         return True
     except Exception:
         return False
+
+
+# ── MANAJEMEN GURU OLEH KEPSEK ───────────────────────────────────
+
+def tambah_guru(nama, kelas, jabatan="Guru", status="Aktif"):
+    data = {"nama":nama,"kelas":kelas,"jabatan":jabatan,"status":status}
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("guru").insert(data).execute()
+            return True
+        except Exception as e:
+            print(f"tambah_guru: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("INSERT INTO guru (nama,kelas,jabatan,status) VALUES (?,?,?,?)",
+            (nama,kelas,jabatan,status))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        return False
+
+def update_guru(guru_id, nama, kelas, jabatan="Guru"):
+    sb = get_sb()
+    if sb:
+        try:
+            sb.table("guru").update({"nama":nama,"kelas":kelas,"jabatan":jabatan}).eq("id",guru_id).execute()
+            return True
+        except Exception as e:
+            print(f"update_guru: {e}")
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE guru SET nama=?,kelas=?,jabatan=? WHERE id=?",
+            (nama,kelas,jabatan,guru_id))
+        conn.commit(); conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_absen_guru_mingguan(tahun, minggu):
+    """Rekap absensi guru per minggu."""
+    import datetime
+    # Hitung tanggal awal dan akhir minggu
+    d = datetime.date(tahun, 1, 1)
+    start = d + datetime.timedelta(weeks=minggu-1)
+    start -= datetime.timedelta(days=start.weekday())
+    end = start + datetime.timedelta(days=6)
+    
+    sb = get_sb()
+    if sb:
+        try:
+            s_res = sb.table("guru").select("id,nama,kelas").eq("status","Aktif").execute()
+            a_res = sb.table("absen_guru").select("guru_id,tanggal,status")                .gte("tanggal",str(start)).lte("tanggal",str(end)).execute()
+            absen_map = {}
+            for a in (a_res.data or []):
+                sid = a["guru_id"]
+                if sid not in absen_map:
+                    absen_map[sid] = {"H":0,"A":0,"I":0,"S":0,"total":0}
+                if a["status"] in absen_map[sid]:
+                    absen_map[sid][a["status"]] += 1
+                absen_map[sid]["total"] += 1
+            rows = []
+            for s in (s_res.data or []):
+                m = absen_map.get(s["id"],{"H":0,"A":0,"I":0,"S":0,"total":0})
+                rows.append({"nama":s["nama"],"kelas":s["kelas"],
+                    "hadir":m["H"],"alpa":m["A"],"izin":m["I"],"sakit":m["S"],"total_hari":m["total"]})
+            return pd.DataFrame(rows), str(start), str(end)
+        except Exception as e:
+            print(f"mingguan error: {e}")
+    return pd.DataFrame(), str(start), str(end)
+
+def get_absen_siswa_mingguan(kelas, tahun, minggu):
+    """Rekap absensi siswa per minggu per kelas."""
+    import datetime
+    d = datetime.date(tahun, 1, 1)
+    start = d + datetime.timedelta(weeks=minggu-1)
+    start -= datetime.timedelta(days=start.weekday())
+    end = start + datetime.timedelta(days=6)
+    
+    sb = get_sb()
+    if sb:
+        try:
+            s_res = sb.table("siswa").select("id,nama").eq("kelas",kelas).eq("status","Aktif").order("nama").execute()
+            a_res = sb.table("absen_siswa").select("siswa_id,tanggal,status")                .gte("tanggal",str(start)).lte("tanggal",str(end)).execute()
+            absen_map = {}
+            for a in (a_res.data or []):
+                sid = a["siswa_id"]
+                if sid not in absen_map:
+                    absen_map[sid] = {"H":0,"A":0,"I":0,"S":0,"total":0}
+                if a["status"] in absen_map[sid]:
+                    absen_map[sid][a["status"]] += 1
+                absen_map[sid]["total"] += 1
+            rows = []
+            for s in (s_res.data or []):
+                m = absen_map.get(s["id"],{"H":0,"A":0,"I":0,"S":0,"total":0})
+                rows.append({"nama":s["nama"],
+                    "hadir":m["H"],"alpa":m["A"],"izin":m["I"],"sakit":m["S"],"total_hari":m["total"]})
+            return pd.DataFrame(rows), str(start), str(end)
+        except Exception as e:
+            print(f"mingguan siswa error: {e}")
+    return pd.DataFrame(), str(start), str(end)
+
+def get_semua_kelas_list():
+    """Return list semua kelas yang ada di database."""
+    sb = get_sb()
+    if sb:
+        try:
+            res = sb.table("guru").select("kelas").eq("status","Aktif").execute()
+            kelas = sorted(set(r["kelas"] for r in (res.data or []) if r["kelas"] and r["kelas"] != "Semua Tingkat"))
+            return kelas
+        except Exception: pass
+    try:
+        conn = get_conn()
+        rows = conn.execute("SELECT DISTINCT kelas FROM guru WHERE status='Aktif' AND kelas != 'Semua Tingkat' ORDER BY kelas").fetchall()
+        conn.close()
+        return [r["kelas"] for r in rows]
+    except Exception:
+        return []

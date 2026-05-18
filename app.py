@@ -381,7 +381,37 @@ if role == "kepsek":
                 use_container_width=True)
 
     with tab_rekap:
-        c1, c2 = st.columns(2)
+        mode_rekap = st.radio("Periode:", ["Bulanan","Mingguan"], horizontal=True, key="mode_rekap")
+
+        if mode_rekap == "Mingguan":
+            rw1, rw2 = st.columns(2)
+            with rw1:
+                tahun_mgg = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_mgg")
+            with rw2:
+                minggu_mgg = st.number_input("Minggu ke-:", min_value=1, max_value=52, value=date.today().isocalendar()[1], key="mgg_num")
+            tab_rg_m, tab_rs_m = st.tabs(["Guru","Siswa"])
+            with tab_rg_m:
+                df_mgg, tgl_start, tgl_end = get_absen_guru_mingguan(tahun_mgg, minggu_mgg)
+                st.caption(f"Periode: {tgl_start} s/d {tgl_end}")
+                if df_mgg.empty:
+                    st.info("Belum ada data.")
+                else:
+                    st.dataframe(df_mgg, use_container_width=True, hide_index=True)
+                    st.download_button("Download CSV", data=df_mgg.to_csv(index=False,encoding="utf-8-sig").encode("utf-8-sig"),
+                        file_name=f"rekap_guru_mgg{minggu_mgg}_{tahun_mgg}.csv", mime="text/csv", use_container_width=True)
+            with tab_rs_m:
+                kls_mgg = st.selectbox("Kelas:", get_semua_kelas(), key="kls_mgg")
+                df_smgg, tgl_start_s, tgl_end_s = get_absen_siswa_mingguan(kls_mgg, tahun_mgg, minggu_mgg)
+                st.caption(f"Periode: {tgl_start_s} s/d {tgl_end_s}")
+                if df_smgg.empty:
+                    st.info("Belum ada data.")
+                else:
+                    st.dataframe(df_smgg, use_container_width=True, hide_index=True)
+                    st.download_button("Download CSV", data=df_smgg.to_csv(index=False,encoding="utf-8-sig").encode("utf-8-sig"),
+                        file_name=f"rekap_siswa_{kls_mgg.replace(' ','_')}_mgg{minggu_mgg}_{tahun_mgg}.csv",
+                        mime="text/csv", use_container_width=True)
+        else:
+            c1, c2 = st.columns(2)
         with c1: bln = st.selectbox("Bulan:", list(range(1,13)), index=date.today().month-1, format_func=lambda m: calendar.month_name[m], key="bln_rekap")
         with c2: thn = st.selectbox("Tahun:", [2024,2025,2026], index=1, key="thn_rekap")
         tab_rg, tab_rs = st.tabs(["Kehadiran Guru","Kehadiran Siswa"])
